@@ -12,7 +12,7 @@ import { Plugin } from "@/plugin"
 import { Config } from "@/config/config"
 import { NotFoundError } from "@/storage/storage"
 
-import { Effect, Layer, Context } from "effect"
+import { Effect, Layer, Context, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { isOverflow as overflow, usable } from "./overflow"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
@@ -533,7 +533,8 @@ const layer = Layer.effect(
               // The synthetic continuation belongs to the same user turn. Keep the
               // host-supplied system rules and tool restrictions; otherwise every
               // later step of the turn silently loses them after compaction.
-              format: turn.format,
+              // Persisted formats are plain JSON; the message encoder requires Schema class instances.
+              format: turn.format ? Schema.decodeUnknownSync(SessionV1.Format)(turn.format) : undefined,
               tools: turn.tools,
               system: turn.system,
               // Keeps host metadata such as the per-turn browser echo endpoint.

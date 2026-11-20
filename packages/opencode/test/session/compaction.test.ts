@@ -945,6 +945,7 @@ describe("session.compaction.process", () => {
       const ssn = yield* SessionNs.Service
       const session = yield* ssn.create({})
       const rules = "TASK-RULES: only use the declared month field; never submit"
+      const outputSchema = { type: "object", properties: { text: { type: "string" } }, required: ["text"] }
       const msg = yield* ssn.updateMessage({
         id: MessageID.ascending(),
         role: "user",
@@ -954,6 +955,7 @@ describe("session.compaction.process", () => {
         time: { created: Date.now() },
         system: rules,
         tools: { bash: false },
+        format: new SessionV1.OutputFormatJsonSchema({ type: "json_schema", retryCount: 2, schema: outputSchema }),
         metadata: { browser_echo_endpoint: "http://127.0.0.1:49123" },
       })
       yield* ssn.updatePart({
@@ -983,6 +985,7 @@ describe("session.compaction.process", () => {
       expect(last.info.id).not.toBe(marker.info.id)
       expect(last.info.system).toBe(rules)
       expect(last.info.tools).toEqual({ bash: false })
+      expect(last.info.format).toEqual({ type: "json_schema", retryCount: 2, schema: outputSchema })
       expect(last.info.metadata).toEqual({ browser_echo_endpoint: "http://127.0.0.1:49123" })
     }),
   )
