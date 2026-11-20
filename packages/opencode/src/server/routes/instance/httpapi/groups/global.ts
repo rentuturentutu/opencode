@@ -12,6 +12,9 @@ import { described } from "./metadata"
 const GlobalHealth = Schema.Struct({
   healthy: Schema.Literal(true),
   version: Schema.String,
+  capabilities: Schema.Struct({
+    skillPathExclusions: Schema.Literal(true),
+  }),
 })
 
 const SyncEventSchemas = EventManifest.Latest.values()

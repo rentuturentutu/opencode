@@ -9,5 +9,9 @@ export const Info = Schema.Struct({
   urls: Schema.optional(Schema.Array(Schema.String)).annotate({
     description: "URLs to fetch skills from (e.g., https://example.com/.well-known/skills/)",
   }),
+  excludedPaths: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description:
+      "Skill directories to leave out. A skill is excluded when it was discovered at, or below, one of these absolute paths.",
+  }),
 })
 export type Info = Schema.Schema.Type<typeof Info>

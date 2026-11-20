@@ -9,7 +9,14 @@ import { Config } from "../../src/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
-import { provideInstance, provideTmpdirInstance, testInstanceStoreLayer, tmpdir } from "../fixture/fixture"
+import {
+  provideInstance,
+  provideTmpdirInstance,
+  testInstanceStoreLayer,
+  TestInstance,
+  tmpdir,
+  withTmpdirInstance,
+} from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import path from "path"
 import fs from "fs/promises"
@@ -64,6 +71,46 @@ const withHome = <A, E, R>(home: string, self: Effect.Effect<A, E, R>) =>
   )
 
 describe("skill", () => {
+  it.live("leaves out skills discovered under an excluded path and nothing else", () =>
+    withTmpdirInstance({
+      git: true,
+      init: (dir) =>
+        Effect.promise(async () => {
+          const write = (relative: string, name: string) =>
+            Bun.write(
+              path.join(dir, relative, "SKILL.md"),
+              `---\nname: ${name}\ndescription: ${name} test skill.\n---\n\n# ${name}\n`,
+            )
+          await Promise.all([
+            write(".opencode/skills/personal-off", "personal-off"),
+            write(".opencode/skills/personal-off/nested", "personal-nested"),
+            write(".opencode/skills/personal-off-twin", "personal-twin"),
+            write(".opencode/skills/personal-on", "personal-on"),
+          ])
+          // The host passes the discovery path of the skill directory, with whatever separators and case it has.
+          const excluded = path.join(dir, ".opencode", "skills", "personal-off")
+          await Bun.write(
+            path.join(dir, "opencode.json"),
+            JSON.stringify({ skills: { excludedPaths: [process.platform === "win32" ? excluded.toUpperCase() : excluded] } }),
+          )
+        }),
+    })(
+      Effect.gen(function* () {
+        const skill = yield* Skill.Service
+        const instance = yield* TestInstance
+        const names = (yield* skill.all()).map((item) => item.name)
+        expect(names).toContain("personal-on")
+        // Only the directory itself and what is below it: a sibling sharing the prefix stays.
+        expect(names).toContain("personal-twin")
+        expect(names).not.toContain("personal-off")
+        expect(names).not.toContain("personal-nested")
+        expect(yield* skill.get("personal-off")).toBeUndefined()
+        expect(yield* skill.require("personal-on").pipe(Effect.map((item) => item.name))).toBe("personal-on")
+        const excludedDir = path.join(instance.directory, ".opencode", "skills", "personal-off")
+        expect((yield* skill.dirs()).some((dir) => dir === excludedDir || dir.startsWith(excludedDir + path.sep))).toBe(false)
+      }),
+    ),
+  )
   it.effect("formats verbose locations as XML-safe filesystem paths", () =>
     Effect.sync(() => {
       const output = Skill.fmt(

@@ -64,7 +64,8 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     const bridge = yield* EffectBridge.make()
 
     const health = Effect.fn("GlobalHttpApi.health")(function* () {
-      return { healthy: true as const, version: InstallationVersion }
+      // The host checks this before it relies on skills.excludedPaths to switch a personal skill off.
+      return { healthy: true as const, version: InstallationVersion, capabilities: { skillPathExclusions: true as const } }
     })
 
     const event = Effect.fn("GlobalHttpApi.event")(function* () {

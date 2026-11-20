@@ -170,6 +170,12 @@ const scan = Effect.fnUntraced(function* (
   }
 })
 
+// Windows paths are case-insensitive and may mix separators.
+function comparablePath(file: string) {
+  const normalized = path.resolve(file).replaceAll("\\", "/")
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized
+}
+
 const discoverSkills = Effect.fnUntraced(function* (
   config: Config.Interface,
   discovery: Discovery.Interface,
@@ -226,9 +232,17 @@ const discoverSkills = Effect.fnUntraced(function* (
     }
   }
 
+  // Compare the paths the skills were discovered at, not their real paths and not their names:
+  // a same-named skill elsewhere and a symlink target stay available.
+  const excluded = (cfg.skills?.excludedPaths ?? []).map(comparablePath)
+  const included = (file: string) => {
+    const candidate = comparablePath(file)
+    return !excluded.some((dir) => candidate === dir || candidate.startsWith(dir + "/"))
+  }
+
   return {
-    matches: Array.from(state.matches),
-    dirs: Array.from(state.dirs),
+    matches: Array.from(state.matches).filter(included),
+    dirs: Array.from(state.dirs).filter(included),
   }
 })
 
