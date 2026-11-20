@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, mock } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Layer } from "effect"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { MessageID, PartID } from "@/session/schema"
 import { Session as SessionNs } from "@/session/session"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -73,6 +75,62 @@ describe("session action routes", () => {
   )
 
   it.instance(
+    "fork route preserves a persisted structured-output prompt",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const service = yield* SessionNs.Service
+        const original = yield* Effect.acquireRelease(service.create({ metadata: { source: "replay" } }), (info) =>
+          service.remove(info.id).pipe(Effect.ignore),
+        )
+        const messageID = MessageID.ascending()
+        yield* service.updateMessage({
+          id: messageID,
+          sessionID: original.id,
+          role: "user",
+          time: { created: 1 },
+          agent: "replay",
+          model: { providerID: "test", modelID: "test" },
+          format: new SessionV1.OutputFormatJsonSchema({
+            type: "json_schema",
+            schema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+            retryCount: 2,
+          }),
+        } as SessionV1.User)
+        yield* service.updatePart({
+          id: PartID.ascending(),
+          messageID,
+          sessionID: original.id,
+          type: "text",
+          text: "retained task",
+        })
+        const before = yield* service.messages({ sessionID: original.id })
+        const res = yield* requestInDirectory(`/session/${original.id}/fork`, test.directory, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        })
+        expect(res.status).toBe(200)
+        const fork = (yield* res.json) as SessionNs.Info
+        yield* Effect.addFinalizer(() => service.remove(fork.id).pipe(Effect.ignore))
+        const copied = yield* service.messages({ sessionID: fork.id })
+        expect(fork.metadata).toEqual(original.metadata)
+        expect(copied).toHaveLength(1)
+        expect(copied[0]!.info.role === "user" && copied[0]!.info.format).toEqual(
+          before[0]!.info.role === "user" && before[0]!.info.format,
+        )
+        expect(copied[0]!.parts[0]).toMatchObject({
+          type: "text",
+          text: "retained task",
+          sessionID: fork.id,
+          messageID: copied[0]!.info.id,
+        })
+        expect(yield* service.messages({ sessionID: original.id })).toEqual(before)
+      }),
+    { git: true },
+  )
+
+  it.instance(
     "abort route returns success",
     () =>
       Effect.gen(function* () {
@@ -85,6 +143,15 @@ describe("session action routes", () => {
 
         expect(res.status).toBe(200)
         expect(yield* res.json).toBe(true)
+        expect(res.headers["x-mobao-resume-after-abort"]).toBeUndefined()
+        const acknowledged = yield* requestInDirectory("/session/" + session.id + "/abort", test.directory, {
+          method: "POST",
+          headers: { "x-mobao-resume-after-abort": "v1" },
+        })
+        expect(acknowledged.status).toBe(200)
+        expect(yield* acknowledged.json).toBe(true)
+        expect(acknowledged.headers["x-mobao-resume-after-abort"]).toBe("v1")
+        expect(acknowledged.headers["x-mobao-resume-session"]).toBe(session.id)
       }),
     { git: true },
   )

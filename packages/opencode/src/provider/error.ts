@@ -97,6 +97,7 @@ export type ParsedStreamError =
       message: string
       isRetryable: boolean
       responseBody: string
+      metadata?: Record<string, string>
     }
 
 export function parseStreamError(input: unknown): ParsedStreamError | undefined {
@@ -106,6 +107,28 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
 
   const responseBody = JSON.stringify(body)
   if (body.type !== "error") return
+
+  // Anthropic/OneAPI stream errors carry type rather than an HTTP status.
+  // Preserve explicit permanent failures instead of treating every unknown
+  // event as a transient server error and replaying the same rejected request.
+  const errorKind = body?.error?.code ?? body?.error?.type
+  if (
+    [
+      "authentication_error",
+      "permission_error",
+      "invalid_request_error",
+      "invalid_api_key",
+      "request_too_large",
+    ].includes(errorKind)
+  ) {
+    return {
+      type: "api_error",
+      message: "Model service rejected request: " + errorKind,
+      isRetryable: false,
+      metadata: { retryPolicy: "permanent_rejection", providerCode: errorKind },
+      responseBody,
+    }
+  }
 
   switch (body?.error?.code) {
     case "context_length_exceeded":

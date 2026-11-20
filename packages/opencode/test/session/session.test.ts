@@ -270,6 +270,95 @@ describe("Session", () => {
     }),
   )
 
+  for (const format of [
+    new SessionV1.OutputFormatJsonSchema({
+      type: "json_schema",
+      schema: {
+        type: "object",
+        properties: { text: { type: "string" }, outcome: { enum: ["success", "failed"] } },
+        required: ["text", "outcome"],
+        additionalProperties: false,
+      },
+      retryCount: 2,
+    }),
+    new SessionV1.OutputFormatText({ type: "text" }),
+    undefined,
+  ]) {
+    it.instance(
+      `fork preserves persisted ${format?.type ?? "default"} output format and failed-turn history`,
+      () =>
+        Effect.gen(function* () {
+          const session = yield* SessionNs.Service
+          const created = yield* Effect.acquireRelease(
+            session.create({ title: "replay-recovery", metadata: { source: "replay" } }),
+            (info) => session.remove(info.id).pipe(Effect.ignore),
+          )
+          const messageID = MessageID.ascending()
+          yield* session.updateMessage({
+            id: messageID,
+            sessionID: created.id,
+            role: "user",
+            time: { created: 1 },
+            agent: "replay",
+            model: { providerID: "test", modelID: "test" },
+            format,
+          } as SessionV1.User)
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID,
+            sessionID: created.id,
+            type: "text",
+            text: "ComputerUse task retained for recovery",
+          })
+          yield* session.updateMessage({
+            id: MessageID.ascending(),
+            sessionID: created.id,
+            role: "assistant",
+            parentID: messageID,
+            time: { created: 2, completed: 3 },
+            agent: "replay",
+            mode: "replay",
+            modelID: "test",
+            providerID: "test",
+            path: { cwd: created.directory, root: created.directory },
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            error: { name: "APIError", data: { message: "Bad Request", statusCode: 400, isRetryable: false } },
+          } as SessionV1.Assistant)
+          const before = yield* session.messages({ sessionID: created.id })
+          expect(before).toHaveLength(2)
+          expect(before[0]!.info.role === "user" && before[0]!.info.format).toEqual(
+            format ? JSON.parse(JSON.stringify(format)) : undefined,
+          )
+          const fork = yield* Effect.acquireRelease(session.fork({ sessionID: created.id }), (info) =>
+            session.remove(info.id).pipe(Effect.ignore),
+          )
+          const copied = yield* session.messages({ sessionID: fork.id })
+          expect(copied).toHaveLength(2)
+          expect(fork.metadata).toEqual(created.metadata)
+          for (const [index, msg] of copied.entries()) {
+            expect(msg.info).toEqual({
+              ...before[index]!.info,
+              sessionID: fork.id,
+              id: msg.info.id,
+              ...(msg.info.role === "assistant" ? { parentID: copied[0]!.info.id } : {}),
+            })
+            expect(msg.info.id).not.toBe(before[index]!.info.id)
+          }
+          expect(copied[0]!.parts).toEqual([
+            {
+              ...before[0]!.parts[0],
+              id: copied[0]!.parts[0]!.id,
+              messageID: copied[0]!.info.id,
+              sessionID: fork.id,
+            },
+          ])
+          expect(copied[0]!.parts[0]!.id).not.toBe(before[0]!.parts[0]!.id)
+          expect(yield* session.messages({ sessionID: created.id })).toEqual(before)
+        }),
+    )
+  }
+
   it.instance("omits metadata when not provided", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service

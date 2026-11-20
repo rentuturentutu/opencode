@@ -1146,6 +1146,92 @@ it.instance(
   3_000,
 )
 
+// A stopped conversation should continue in place, not replay the old prompt.
+it.instance("cancel then follow-up retains history and executes only the new prompt", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "long-task" })
+    yield* llm.hang
+    yield* user(chat.id, "original task")
+    const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(fiber)
+    const retained = yield* sessions.messages({ sessionID: chat.id })
+    yield* llm.text("continued without replay")
+    yield* user(chat.id, "report progress; do not repeat the task")
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    expect(result.info.sessionID).toBe(chat.id)
+    expect(result.parts.some((part) => part.type === "text" && part.text.includes("continued without replay"))).toBe(
+      true,
+    )
+    const after = yield* sessions.messages({ sessionID: chat.id })
+    expect(after.slice(0, retained.length)).toEqual(retained)
+    expect(after.filter((msg) => msg.info.role === "user")).toHaveLength(2)
+  }),
+)
+
+noLLMServer.instance("concurrent aborts and new work wait for interrupted tool cleanup", () =>
+  Effect.gen(function* () {
+    const { run, chat } = yield* boot()
+    const started = yield* Deferred.make<void>()
+    const draining = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const seeded = yield* seed(chat.id, { finish: "stop" })
+    const result: SessionV1.WithParts = { info: seeded.assistant, parts: [] }
+    let cleaned = false
+    let resumed = false
+    yield* Effect.gen(function* () {
+      const old = yield* run
+        .ensureRunning(
+          chat.id,
+          Effect.succeed(result),
+          Effect.gen(function* () {
+            yield* Deferred.succeed(started, undefined)
+            return yield* Effect.never
+          }).pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                yield* Deferred.succeed(draining, undefined)
+                yield* Deferred.await(release)
+                cleaned = true
+              }),
+            ),
+          ),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(started)
+      const first = yield* run.cancel(chat.id).pipe(Effect.forkChild)
+      yield* Deferred.await(draining)
+      const second = yield* run.cancel(chat.id).pipe(Effect.forkChild)
+      const next = yield* run
+        .ensureRunning(
+          chat.id,
+          Effect.succeed(result),
+          Effect.sync(() => {
+            expect(cleaned).toBe(true)
+            resumed = true
+            return result
+          }),
+        )
+        .pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      expect(resumed).toBe(false)
+      expect(Exit.isFailure(yield* run.assertNotBusy(chat.id).pipe(Effect.exit))).toBe(true)
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(first)
+      yield* Fiber.join(second)
+      yield* Fiber.join(old)
+      yield* Fiber.join(next)
+      expect(resumed).toBe(true)
+      yield* run.assertNotBusy(chat.id)
+    }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)))
+  }),
+)
+
 // Cancel semantics
 
 it.instance("cancel interrupts loop and resolves with an assistant message", () =>

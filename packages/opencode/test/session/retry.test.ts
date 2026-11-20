@@ -519,3 +519,29 @@ describe("session.message-v2.fromError", () => {
     })
   })
 })
+
+describe("permanent HTTP failures", () => {
+  test.each([400, 401, 403, 413, 422])("does not replay HTTP %i despite SDK flag or misleading body", (statusCode) => {
+    const error = new SessionV1.APIError({
+      message: "server error, try again later",
+      statusCode,
+      isRetryable: true,
+    }).toObject()
+    expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+  })
+  test("ignores negative and infinite server delay hints", () => {
+    expect(SessionRetry.delay(1, apiError({ "retry-after-ms": "-1" }), 0)).toBe(2000)
+    expect(SessionRetry.delay(1, apiError({ "retry-after": "Infinity" }), 0)).toBe(2000)
+  })
+})
+
+test.each(["authentication_error", "permission_error", "invalid_request_error", "request_too_large"])(
+  "does not retry explicit SSE %s",
+  (type) => {
+    const error = MessageV2.fromError(
+      { type: "error", error: { type, message: "server error try again" } },
+      { providerID },
+    )
+    expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+  },
+)

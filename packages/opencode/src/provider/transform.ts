@@ -527,6 +527,20 @@ const GEMINI_MODELS_WITH_SAMPLING_DEFAULTS = [
   /gemini-3[.-]5-flash(?!-lite)(?:[.-]|$)/,
 ]
 
+// OneAPI's experimental Vision backend rejects forced tools (Anthropic "any")
+// with MaaS 400001, even for a valid one-tool greeting. Keep tools, thinking,
+// image input and StructuredOutput validation; only relax transport selection.
+export function toolChoice(model: Pick<Provider.Model, "api">, choice: "auto" | "required" | "none" | undefined) {
+  if (
+    choice === "required" &&
+    model.api.npm === "@ai-sdk/anthropic" &&
+    model.api.id.toLowerCase() === "deepseek-v4-flash-vision-exp"
+  ) {
+    return "auto"
+  }
+  return choice
+}
+
 export function temperature(model: Provider.Model) {
   const id = model.api.id.toLowerCase()
   if (id.includes("north-mini-code")) return 1.0

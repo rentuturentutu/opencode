@@ -712,6 +712,10 @@ const layer: Layer.Layer<
           ...msg.info,
           sessionID: session.id,
           id: newID,
+          // Persisted formats are plain JSON; event encoding requires Schema class instances.
+          ...(msg.info.role === "user" && msg.info.format
+            ? { format: Schema.decodeUnknownSync(SessionV1.Format)(msg.info.format) }
+            : {}),
           ...(parentID && { parentID }),
         })
 

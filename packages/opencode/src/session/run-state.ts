@@ -45,7 +45,7 @@ const layer = Layer.effect(
             runners.clear()
           }),
         )
-        return { runners, scope }
+        return { runners, scope, cancellations: new Map<SessionID, Effect.Effect<void>>() }
       }),
     )
 
@@ -54,6 +54,9 @@ const layer = Layer.effect(
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
     ) {
       const data = yield* InstanceState.get(state)
+      // A new prompt must not start while interrupted tools are still draining.
+      const cancelling = data.cancellations.get(sessionID)
+      if (cancelling) yield* cancelling
       const existing = data.runners.get(sessionID)
       if (existing) return existing
       const next = Runner.make<SessionV1.WithParts>(data.scope, {
@@ -71,18 +74,26 @@ const layer = Layer.effect(
     const assertNotBusy = Effect.fn("SessionRunState.assertNotBusy")(function* (sessionID: SessionID) {
       const data = yield* InstanceState.get(state)
       const existing = data.runners.get(sessionID)
-      if (existing?.busy) yield* busyError(sessionID)
+      if (existing?.busy || data.cancellations.has(sessionID)) yield* busyError(sessionID)
     })
 
     const cancel = Effect.fn("SessionRunState.cancel")(function* (sessionID: SessionID) {
-      yield* cancelBackgroundJobs(background, sessionID)
       const data = yield* InstanceState.get(state)
-      const existing = data.runners.get(sessionID)
-      if (!existing) {
-        yield* status.set(sessionID, { type: "idle" })
-        return
-      }
-      yield* existing.cancel
+      const pending = data.cancellations.get(sessionID)
+      if (pending) return yield* pending
+      // Concurrent aborts join the same drain. Runner.cancel marks its internal
+      // state idle before tool finalizers finish; that is not a reusable receipt.
+      const drain = yield* Effect.cached(
+        Effect.gen(function* () {
+          yield* cancelBackgroundJobs(background, sessionID)
+          const existing = data.runners.get(sessionID)
+          if (existing) yield* existing.cancel
+          yield* cancelBackgroundJobs(background, sessionID)
+          yield* status.set(sessionID, { type: "idle" })
+        }).pipe(Effect.ensuring(Effect.sync(() => data.cancellations.delete(sessionID))), Effect.uninterruptible),
+      )
+      data.cancellations.set(sessionID, drain)
+      yield* drain
     })
 
     const ensureRunning = Effect.fn("SessionRunState.ensureRunning")(function* (

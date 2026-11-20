@@ -229,9 +229,19 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return yield* fork({ params: ctx.params, payload })
     })
 
-    const abort = Effect.fn("SessionHttpApi.abort")(function* (ctx: { params: { sessionID: SessionID } }) {
+    const abort = Effect.fn("SessionHttpApi.abort")(function* (ctx: {
+      params: { sessionID: SessionID }
+      request: HttpServerRequest.HttpServerRequest
+    }) {
       yield* promptSvc.cancel(ctx.params.sessionID)
-      return true
+      // Opt-in, session-bound receipt; older clients keep the boolean contract.
+      // Never acknowledge before the runner and background tools have drained.
+      return HttpServerResponse.jsonUnsafe(true, {
+        headers:
+          ctx.request.headers["x-mobao-resume-after-abort"] === "v1"
+            ? { "x-mobao-resume-after-abort": "v1", "x-mobao-resume-session": ctx.params.sessionID }
+            : {},
+      })
     })
 
     const init = Effect.fn("SessionHttpApi.init")(function* (ctx: {
@@ -423,7 +433,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("remove", remove)
       .handle("update", update)
       .handleRaw("fork", forkRaw)
-      .handle("abort", abort)
+      .handleRaw("abort", abort)
       .handle("init", init)
       .handle("share", share)
       .handle("unshare", unshare)

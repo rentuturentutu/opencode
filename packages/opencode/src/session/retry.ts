@@ -51,7 +51,7 @@ export function delay(attempt: number, error?: SessionV1.APIError, random = Math
       const retryAfterMs = headers["retry-after-ms"]
       if (retryAfterMs) {
         const parsedMs = Number.parseFloat(retryAfterMs)
-        if (!Number.isNaN(parsedMs)) {
+        if (Number.isFinite(parsedMs) && parsedMs >= 0) {
           return cap(parsedMs)
         }
       }
@@ -59,7 +59,7 @@ export function delay(attempt: number, error?: SessionV1.APIError, random = Math
       const retryAfter = headers["retry-after"]
       if (retryAfter) {
         const parsedSeconds = Number.parseFloat(retryAfter)
-        if (!Number.isNaN(parsedSeconds)) {
+        if (Number.isFinite(parsedSeconds) && parsedSeconds >= 0) {
           // convert seconds to milliseconds
           return cap(Math.ceil(parsedSeconds * 1000))
         }
@@ -87,6 +87,18 @@ export function retryable(error: Err, provider: string) {
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
+    if (error.data.metadata?.retryPolicy === "permanent_rejection") return undefined
+    // Authentication, size and validation rejections cannot recover by sending
+    // the same request. Preserve legacy gateways that wrap a real transport
+    // failure in HTTP 400, but do not trust a generic retry flag/body there.
+    if (status !== undefined && [401, 403, 413, 422].includes(status)) return undefined
+    if (
+      status === 400 &&
+      !/upstream connect|connection refused|connection reset|socket hang up/i.test(
+        error.data.message + " " + (error.data.responseBody ?? ""),
+      )
+    )
+      return undefined
     // 5xx errors are transient server failures and should always be retried,
     // even when the provider SDK doesn't explicitly mark them as retryable.
     if (
