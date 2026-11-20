@@ -317,6 +317,67 @@ it.live("InstanceState dedupes concurrent lookups", () =>
   }),
 )
 
+// A cancelled session must not leave its interruption behind as the directory's
+// state: another session in the same directory still needs a usable lookup.
+it.live("InstanceState does not cache a lookup interrupted with its caller", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    const started = yield* Deferred.make<void>()
+    let n = 0
+    const state = yield* InstanceState.make(() =>
+      Effect.gen(function* () {
+        n += 1
+        if (n > 1) return { n }
+        yield* Deferred.succeed(started, undefined)
+        return yield* Effect.never
+      }),
+    )
+
+    const first = yield* access(state, dir).pipe(Effect.forkScoped)
+    yield* Deferred.await(started)
+    yield* Fiber.interrupt(first)
+
+    const exit = yield* access(state, dir).pipe(Effect.exit)
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) expect(exit.value.n).toBe(2)
+  }),
+)
+
+it.live("InstanceState waiters survive interruption of the caller that started the lookup", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    const started = yield* Deferred.make<void>()
+    const waiting = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    let n = 0
+    const state = yield* InstanceState.make(() =>
+      Effect.gen(function* () {
+        n += 1
+        if (n > 1) {
+          yield* Deferred.await(release)
+          return { n }
+        }
+        yield* Deferred.succeed(started, undefined)
+        return yield* Effect.never
+      }),
+    )
+
+    const first = yield* access(state, dir).pipe(Effect.forkScoped)
+    yield* Deferred.await(started)
+    const waiter = yield* Effect.gen(function* () {
+      yield* Deferred.succeed(waiting, undefined)
+      return yield* access(state, dir)
+    }).pipe(Effect.exit, Effect.forkScoped)
+    yield* Deferred.await(waiting)
+    yield* Fiber.interrupt(first)
+    yield* Deferred.succeed(release, undefined)
+
+    const exit = yield* Fiber.join(waiter)
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit)) expect(exit.value.n).toBe(2)
+  }),
+)
+
 it.live("InstanceState survives deferred resume from the same instance context", () =>
   Effect.gen(function* () {
     const dir = yield* tmpdirScoped({ git: true })

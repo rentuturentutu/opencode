@@ -1205,3 +1205,53 @@ it.live("host browser endpoint reaches actual shell child without model argument
   expect(result.output.trim()).toBe("http://127.0.0.1:49123")
  })),
 )
+
+// The runtime starts shells without a visible console. Such a console uses the
+// OEM code page (936/GBK on Chinese Windows) while the tool decodes UTF-8, so
+// Chinese file contents and names came back as U+FFFD before PowerShell forced
+// UTF-8. cmd caches its startup code page and is intentionally not covered.
+describe("tool.shell Windows output encoding", () => {
+  for (const item of ps) {
+    it.live(`decodes non-ASCII output [${item.label}]`, () =>
+      withShell(
+        item,
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            const result = yield* run({ command: "echo 决策边界", description: "Echo Chinese text" })
+            expect(result.metadata.exit).toBe(0)
+            expect(result.output).toContain("决策边界")
+            expect(result.output).not.toContain("\uFFFD")
+          }),
+        ),
+      ),
+    )
+  }
+})
+
+// GBK bytes such as a native tool printing in the console code page cannot be decoded as
+// UTF-8. The model is told so instead of acting on the garbled text.
+describe("tool.shell undecodable output", () => {
+  each("points to the read tool when output is not UTF-8", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const gbk = "process.stdout.write(Buffer.from([0xb2,0xe2,0xca,0xd4,0xd6,0xd0,0xce,0xc4]))"
+        const text = `${bin} -e ${evalarg(gbk)}`
+        const result = yield* run({ command: PS.has(sh()) ? `& ${text}` : text, description: "Print GBK bytes" })
+        expect(result.output).toContain("undecodable characters (U+FFFD)")
+        expect(result.output).toContain("read tool")
+      }),
+    ),
+  )
+
+  each("adds no note to ordinary output", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const result = yield* run({ command: "echo ready", description: "Echo" })
+        expect(result.output).not.toContain("U+FFFD")
+      }),
+    ),
+  )
+})

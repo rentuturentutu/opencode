@@ -1,4 +1,4 @@
-import { Effect, ScopedCache, Scope } from "effect"
+import { Cause, Duration, Effect, Exit, ScopedCache, Scope } from "effect"
 import type { InstanceContext } from "@/project/instance-context"
 import { InstanceRef, WorkspaceRef } from "./instance-ref"
 import { registerDisposer } from "./instance-registry"
@@ -27,12 +27,18 @@ export const make = <A, E = never, R = never>(
   init: (ctx: InstanceContext) => Effect.Effect<A, E, R | Scope.Scope>,
 ): Effect.Effect<InstanceState<A, E, Exclude<R, Scope.Scope>>, never, R | Scope.Scope> =>
   Effect.gen(function* () {
-    const cache = yield* ScopedCache.make<string, A, E, R>({
+    // The lookup runs in the fiber of whichever caller asked first. When that
+    // caller is interrupted (a cancelled session, a client timeout), the
+    // interruption is its own, not the directory's state, so it must not stay
+    // cached for every later session in the same directory.
+    const cache = yield* ScopedCache.makeWith<string, A, E, R>({
       capacity: Number.POSITIVE_INFINITY,
       lookup: () =>
         Effect.gen(function* () {
           return yield* init(yield* context)
         }),
+      timeToLive: (exit) =>
+        Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause) ? Duration.zero : Duration.infinity,
     })
 
     const off = registerDisposer((directory) => Effect.runPromise(ScopedCache.invalidate(cache, directory)))
@@ -46,7 +52,13 @@ export const make = <A, E = never, R = never>(
 
 export const get = <A, E, R>(self: InstanceState<A, E, R>) =>
   Effect.gen(function* () {
-    return yield* ScopedCache.get(self.cache, yield* directory)
+    const key = yield* directory
+    const exit = yield* Effect.exit(ScopedCache.get(self.cache, key))
+    // A waiter observes the interruption of the caller that started the shared
+    // lookup. That result is not cached, so look it up once more. An interrupted
+    // current fiber fails again immediately without running the lookup.
+    if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return yield* ScopedCache.get(self.cache, key)
+    return yield* exit
   })
 
 export const use = <A, E, R, B>(self: InstanceState<A, E, R>, select: (value: A) => B) => Effect.map(get(self), select)

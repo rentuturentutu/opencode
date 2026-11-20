@@ -31,6 +31,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { OneAPIStream } from "./oneapi-stream"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
@@ -93,7 +94,9 @@ function timeoutController(ms: number) {
 
 // Applies the `headerTimeout`, `chunkTimeout` (SSE idle) and `timeout` provider options at the
 // fetch layer, on top of `options.fetch` when a custom fetch is configured.
-function timeoutFetch(options: Record<string, any>) {
+// `wrapResponse` lets a provider repair its own stream shape (OneAPI sends empty keep-alive SSE
+// frames) after the idle-timeout wrapper, so a chunk is never held back by the repair step.
+function timeoutFetch(options: Record<string, any>, wrapResponse?: (res: Response) => Response) {
   const customFetch = options["fetch"]
   const chunkTimeout = options["chunkTimeout"] ?? 300_000
   const headerTimeout = options["headerTimeout"] ?? 300_000
@@ -121,8 +124,8 @@ function timeoutFetch(options: Record<string, any>) {
       timeout: false,
     }).finally(() => headerTimeoutCtl?.clear())
 
-    if (!chunkAbortCtl) return res
-    return wrapSSE(res, chunkTimeout, chunkAbortCtl)
+    const stream = chunkAbortCtl ? wrapSSE(res, chunkTimeout, chunkAbortCtl) : res
+    return wrapResponse ? wrapResponse(stream) : stream
   }
 }
 
@@ -1849,7 +1852,12 @@ const layer = Layer.effect(
         const existing = s.sdk.get(key)
         if (existing) return existing
 
-        options["fetch"] = timeoutFetch(options)
+        options["fetch"] = timeoutFetch(
+          options,
+          model.providerID === "oneapi-anthropic" && model.api.npm === "@ai-sdk/anthropic"
+            ? OneAPIStream.wrapOneAPIAnthropicStream
+            : undefined,
+        )
         delete options["chunkTimeout"]
         delete options["headerTimeout"]
 

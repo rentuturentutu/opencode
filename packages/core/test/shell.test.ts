@@ -63,6 +63,23 @@ describe("shell", () => {
     expect(zsh.at(-1)).toBe("/tmp")
   })
 
+  test("forces UTF-8 output only for Windows PowerShell shells", () => {
+    const powershell = Shell.utf8("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "Get-Date")
+    expect(Shell.utf8("/bin/bash", "ls")).toBe("ls")
+    expect(Shell.utf8("C:/Windows/System32/cmd.exe", "dir")).toBe("dir")
+    if (process.platform !== "win32") {
+      expect(powershell).toBe("Get-Date")
+      return
+    }
+    expect(powershell).toStartWith("try{[Console]::OutputEncoding=")
+    expect(powershell).toEndWith("Get-Date")
+    // These must stay first in a PowerShell script, so the prefix is not added.
+    for (const first of ["using namespace System.Text; [Text]", "param($a) $a", "#requires -Version 5\nGet-Date"]) {
+      expect(Shell.utf8("C:/tools/pwsh.exe", first)).toBe(first)
+    }
+    expect(Shell.args("C:/tools/pwsh.exe", "Get-Date", "C:/")).toEqual(["-NoProfile", "-Command", powershell])
+  })
+
   if (process.platform === "win32") {
     test("rejects blacklisted shells case-insensitively", async () => {
       await withShell("NU.EXE", async () => {

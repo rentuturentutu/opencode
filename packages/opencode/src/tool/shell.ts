@@ -293,7 +293,7 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
 
 function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
   if (process.platform === "win32" && Shell.ps(shell)) {
-    return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
+    return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", Shell.utf8(shell, command)], {
       cwd,
       env,
       stdin: "ignore",
@@ -568,6 +568,14 @@ export const ShellTool = Tool.define(
       }
       if (aborted) meta.push("User aborted the command")
       const raw = list.map((item) => item.text).join("")
+      // Text that is not UTF-8 (a native tool printing in the console code page, a GBK file)
+      // decodes to U+FFFD. Say so, so the model rereads it instead of acting on garbled text.
+      const undecodable = raw.match(/\uFFFD/g)?.length ?? 0
+      if (undecodable >= 3) {
+        meta.push(
+          `Output contains ${undecodable} undecodable characters (U+FFFD): the command printed text that is not UTF-8. Do not rely on the garbled text; read text files with the read tool, which decodes them, instead of printing them through the shell.`,
+        )
+      }
       const end = tail(raw, limits.maxLines, limits.maxBytes)
       if (end.cut) cut = true
       if (!file && end.cut) {

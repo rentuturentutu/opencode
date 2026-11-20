@@ -153,6 +153,22 @@ export function ps(file: string) {
   return meta(file)?.ps === true
 }
 
+// Shells started without a visible console get the OEM code page (936/GBK on
+// Chinese Windows) while their output is decoded as UTF-8. Switch the child to
+// UTF-8 before the command runs; a restricted language mode keeps the default.
+// Commands that must begin with using/param/#requires keep the default, and a
+// command that fails to parse reports its parser error before the switch runs.
+// cmd is left unchanged: it caches the code page at startup, so a leading chcp
+// does not affect its own echo/dir output.
+const POWERSHELL_UTF8 =
+  "try{[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);$OutputEncoding=[Console]::OutputEncoding}catch{};"
+
+export function utf8(file: string, command: string) {
+  if (process.platform !== "win32" || !ps(file)) return command
+  if (/^\s*(?:using\s|param\s*\(|#requires\b)/i.test(command)) return command
+  return POWERSHELL_UTF8 + command
+}
+
 function info(file: string): Item {
   const item = full(file)
   const n = name(item)
@@ -195,7 +211,7 @@ export function args(file: string, command: string, cwd: string) {
     ]
   }
   if (n === "cmd") return ["/c", command]
-  if (ps(file)) return ["-NoProfile", "-Command", command]
+  if (ps(file)) return ["-NoProfile", "-Command", utf8(file, command)]
   return ["-c", command]
 }
 
