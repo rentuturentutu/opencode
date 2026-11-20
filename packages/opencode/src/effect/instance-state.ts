@@ -54,11 +54,13 @@ export const get = <A, E, R>(self: InstanceState<A, E, R>) =>
   Effect.gen(function* () {
     const key = yield* directory
     const exit = yield* Effect.exit(ScopedCache.get(self.cache, key))
+    if (!Exit.isFailure(exit) || !Cause.hasInterruptsOnly(exit.cause)) return yield* exit
     // A waiter observes the interruption of the caller that started the shared
-    // lookup. That result is not cached, so look it up once more. An interrupted
-    // current fiber fails again immediately without running the lookup.
-    if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return yield* ScopedCache.get(self.cache, key)
-    return yield* exit
+    // lookup. The cache hands that result to its waiters before it records that the
+    // result must not be cached, so the waiter yields once to let the cache finish
+    // and then looks it up again. An interrupted current fiber stops at the yield.
+    yield* Effect.yieldNow
+    return yield* ScopedCache.get(self.cache, key)
   })
 
 export const use = <A, E, R, B>(self: InstanceState<A, E, R>, select: (value: A) => B) => Effect.map(get(self), select)

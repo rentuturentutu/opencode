@@ -369,6 +369,10 @@ it.live("InstanceState waiters survive interruption of the caller that started t
       return yield* access(state, dir)
     }).pipe(Effect.exit, Effect.forkScoped)
     yield* Deferred.await(waiting)
+    // Loading the instance context is asynchronous. Without this pause the waiter would reach the
+    // cache only after the first caller was interrupted and the test would never see the shared
+    // lookup fail underneath a caller that was not interrupted.
+    yield* Effect.sleep(Duration.millis(100))
     yield* Fiber.interrupt(first)
     yield* Deferred.succeed(release, undefined)
 
