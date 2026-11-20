@@ -1,24 +1,23 @@
 import { afterEach, expect, it } from "bun:test"
 import { createServer, type Server } from "node:http"
 import { streamText } from "ai"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { Env } from "@/env"
-import { Plugin } from "@/plugin"
 import { Provider } from "@/provider/provider"
 import { ProviderError } from "@/provider/error"
-import { ModelID, ProviderID } from "@/provider/schema"
 import { OneAPIStream } from "@/provider/oneapi-stream"
 
 afterEach(async () => {
   await disposeAllInstances()
 })
 
-const test = testEffect(
-  Layer.mergeAll(Provider.defaultLayer, Env.defaultLayer, Plugin.defaultLayer, CrossSpawnSpawner.defaultLayer),
-)
+const test = testEffect(AppNodeBuilder.build(LayerNode.group([Provider.node, CrossSpawnSpawner.node])))
 
 test.live("skips safe empty OneAPI SSE frames and waits for message_stop", () =>
   Effect.gen(function* () {
@@ -31,7 +30,7 @@ test.live("skips safe empty OneAPI SSE frames and waits for message_stop", () =>
       () =>
         Effect.gen(function* () {
           const provider = yield* Provider.Service
-          const model = yield* provider.getModel(ProviderID.make("oneapi-anthropic"), ModelID.make("test-model"))
+          const model = yield* provider.getModel(ProviderV2.ID.make("oneapi-anthropic"), ModelV2.ID.make("test-model"))
           const result = streamText({
             model: yield* provider.getLanguage(model),
             messages: [{ role: "user", content: "hello" }],
@@ -55,7 +54,7 @@ test.live("reports real premature EOF instead of manufacturing a successful turn
       () =>
         Effect.gen(function* () {
           const provider = yield* Provider.Service
-          const model = yield* provider.getModel(ProviderID.make("oneapi-anthropic"), ModelID.make("test-model"))
+          const model = yield* provider.getModel(ProviderV2.ID.make("oneapi-anthropic"), ModelV2.ID.make("test-model"))
           const result = streamText({
             model: yield* provider.getLanguage(model),
             onError() {},

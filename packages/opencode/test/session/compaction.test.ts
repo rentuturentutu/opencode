@@ -939,6 +939,54 @@ describe("session.compaction.process", () => {
     }),
   )
 
+  it.instance(
+    "keeps the turn's system rules, tool limits and format on the synthetic continue prompt",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const rules = "TASK-RULES: only use the declared month field; never submit"
+      const msg = yield* ssn.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: session.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+        system: rules,
+        tools: { bash: false },
+        metadata: { browser_echo_endpoint: "http://127.0.0.1:49123" },
+      })
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: msg.id,
+        sessionID: session.id,
+        type: "text",
+        text: "long task",
+      })
+      // Real auto compaction: the loop appends a bare marker user message.
+      yield* createCompactionMarker(session.id)
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+      const marker = msgs.at(-1)!
+      expect(marker.info.role === "user" && marker.info.system).toBeFalsy()
+
+      const result = yield* SessionCompaction.use.process({
+        parentID: marker.info.id,
+        messages: msgs,
+        sessionID: session.id,
+        auto: true,
+      })
+
+      const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+      expect(result).toBe("continue")
+      expect(last?.info.role).toBe("user")
+      if (last?.info.role !== "user") throw new Error("missing continuation")
+      expect(last.info.id).not.toBe(marker.info.id)
+      expect(last.info.system).toBe(rules)
+      expect(last.info.tools).toEqual({ bash: false })
+      expect(last.info.metadata).toEqual({ browser_echo_endpoint: "http://127.0.0.1:49123" })
+    }),
+  )
+
   itCompaction.instance(
     "persists tail_start_id for retained recent turns",
     Effect.gen(function* () {

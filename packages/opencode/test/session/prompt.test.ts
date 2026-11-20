@@ -628,6 +628,25 @@ it.instance("legacy prompt emits message events without session.next events", ()
   }),
 )
 
+it.instance("prompt keeps host metadata on the user message", () =>
+  Effect.gen(function* () {
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Echo endpoint" })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      metadata: { browser_echo_endpoint: "http://127.0.0.1:49123" },
+      parts: [{ type: "text", text: "hello" }],
+    })
+    const user = (yield* sessions.messages({ sessionID: chat.id })).findLast((m) => m.info.role === "user")
+    expect(user?.info.role === "user" && user.info.metadata).toEqual({
+      browser_echo_endpoint: "http://127.0.0.1:49123",
+    })
+  }),
+)
+
 it.instance("loop surfaces content-filter finishes as session errors", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

@@ -1197,13 +1197,23 @@ describe("tool.shell truncation", () => {
   )
 })
 
-it.live("host browser endpoint reaches actual shell child without model arguments", () =>
- runIn(projectRoot, Effect.gen(function* () {
-  const result = yield* run({ command: `${bin} -e ${evalarg('console.log(process.env.JK3_BROWSER_CONTROL_ENDPOINT)')}` }, {
-   ...ctx, messages: [{info:{role:"user",metadata:{browser_echo_endpoint:"http://127.0.0.1:49123"}},parts:[]}] as any,
-  })
-  expect(result.output.trim()).toBe("http://127.0.0.1:49123")
- })),
+each("host browser endpoint reaches actual shell child without model arguments", () =>
+  runIn(
+    projectRoot,
+    Effect.gen(function* () {
+      const text = `${bin} -e ${evalarg("console.log(process.env.JK3_BROWSER_CONTROL_ENDPOINT)")}`
+      const result = yield* run(
+        { command: PS.has(sh()) ? `& ${text}` : text },
+        {
+          ...ctx,
+          messages: [
+            { info: { role: "user", metadata: { browser_echo_endpoint: "http://127.0.0.1:49123" } }, parts: [] },
+          ] as any,
+        },
+      )
+      expect(result.output.trim()).toBe("http://127.0.0.1:49123")
+    }),
+  ),
 )
 
 // The runtime starts shells without a visible console. Such a console uses the
@@ -1218,7 +1228,7 @@ describe("tool.shell Windows output encoding", () => {
         runIn(
           projectRoot,
           Effect.gen(function* () {
-            const result = yield* run({ command: "echo 决策边界", description: "Echo Chinese text" })
+            const result = yield* run({ command: "echo 决策边界" })
             expect(result.metadata.exit).toBe(0)
             expect(result.output).toContain("决策边界")
             expect(result.output).not.toContain("\uFFFD")
@@ -1238,7 +1248,7 @@ describe("tool.shell undecodable output", () => {
       Effect.gen(function* () {
         const gbk = "process.stdout.write(Buffer.from([0xb2,0xe2,0xca,0xd4,0xd6,0xd0,0xce,0xc4]))"
         const text = `${bin} -e ${evalarg(gbk)}`
-        const result = yield* run({ command: PS.has(sh()) ? `& ${text}` : text, description: "Print GBK bytes" })
+        const result = yield* run({ command: PS.has(sh()) ? `& ${text}` : text })
         expect(result.output).toContain("undecodable characters (U+FFFD)")
         expect(result.output).toContain("read tool")
       }),
@@ -1249,7 +1259,7 @@ describe("tool.shell undecodable output", () => {
     runIn(
       projectRoot,
       Effect.gen(function* () {
-        const result = yield* run({ command: "echo ready", description: "Echo" })
+        const result = yield* run({ command: "echo ready" })
         expect(result.output).not.toContain("U+FFFD")
       }),
     ),

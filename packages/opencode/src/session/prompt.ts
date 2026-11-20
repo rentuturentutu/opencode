@@ -436,6 +436,8 @@ const layer = Layer.effect(
         time: { created: Date.now() },
         agent: lastUser.agent,
         model: lastUser.model,
+        // Same turn: keep host metadata such as the browser echo endpoint.
+        metadata: lastUser.metadata,
       }
       yield* sessions.updateMessage(summaryUserMsg)
       yield* sessions.updatePart({
@@ -667,6 +669,7 @@ const layer = Layer.effect(
         },
         system: input.system,
         format: input.format,
+        metadata: input.metadata,
       }
 
       const current = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
@@ -1509,6 +1512,7 @@ export const PromptInput = Schema.Struct({
   format: Schema.optional(SessionV1.Format),
   system: Schema.optional(Schema.String),
   variant: Schema.optional(Schema.String),
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Any)),
   parts: Schema.Array(
     Schema.Union([
       SessionV1.TextPartInput,

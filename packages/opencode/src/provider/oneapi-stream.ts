@@ -1,8 +1,6 @@
 import { createParser, type EventSourceMessage } from "eventsource-parser"
-import * as Log from "@opencode-ai/core/util/log"
 import { ProviderError } from "./error"
 
-const log = Log.create({ service: "provider.oneapi" })
 const encoder = new TextEncoder()
 
 export function wrapOneAPIAnthropicStream(response: Response): Response {
@@ -12,16 +10,12 @@ export function wrapOneAPIAnthropicStream(response: Response): Response {
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   const pending: Uint8Array[] = []
-  let emptyFrames = 0
   let sawMessageStop = false
   let ended = false
 
   const parser = createParser({
     onEvent(event) {
-      if (isEmptySafeFrame(event)) {
-        emptyFrames++
-        return
-      }
+      if (isEmptySafeFrame(event)) return
       if (isMessageStop(event)) sawMessageStop = true
       pending.push(encodeEvent(event))
     },
@@ -46,12 +40,10 @@ export function wrapOneAPIAnthropicStream(response: Response): Response {
       }
 
       if (!sawMessageStop) {
-        log.warn("OneAPI SSE ended before message_stop", { emptyFrames })
         controller.error(new ProviderError.ResponseStreamError("OneAPI SSE ended before message_stop"))
         return
       }
 
-      if (emptyFrames > 0) log.info("OneAPI SSE completed", { emptyFrames })
       controller.close()
     },
     async cancel(reason) {
