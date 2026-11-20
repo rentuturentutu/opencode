@@ -978,13 +978,18 @@ describe("session.compaction.process", () => {
         auto: true,
       })
 
-      const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+      const listed = yield* ssn.messages({ sessionID: session.id })
+      // The message list endpoint encodes with this schema; a stored structured-output
+      // format that is not a class instance makes the whole list fail.
+      expect(() => Schema.encodeUnknownSync(Schema.Array(SessionV1.WithParts))(listed)).not.toThrow()
+      const last = listed.at(-1)
       expect(result).toBe("continue")
       expect(last?.info.role).toBe("user")
       if (last?.info.role !== "user") throw new Error("missing continuation")
       expect(last.info.id).not.toBe(marker.info.id)
       expect(last.info.system).toBe(rules)
       expect(last.info.tools).toEqual({ bash: false })
+      expect(last.info.format).toBeInstanceOf(SessionV1.OutputFormatJsonSchema)
       expect(last.info.format).toEqual({ type: "json_schema", retryCount: 2, schema: outputSchema })
       expect(last.info.metadata).toEqual({ browser_echo_endpoint: "http://127.0.0.1:49123" })
     }),

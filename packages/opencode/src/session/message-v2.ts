@@ -77,12 +77,20 @@ export const cursor = {
   },
 }
 
-const info = (row: typeof MessageTable.$inferSelect) =>
-  ({
+const decodeFormat = Schema.decodeUnknownSync(SessionV1.Format)
+
+const info = (row: typeof MessageTable.$inferSelect) => {
+  const value = {
     ...row.data,
     id: row.id,
     sessionID: row.session_id,
-  }) as Info
+  } as Info
+  // Persisted output formats are plain JSON, but the message list endpoint, the event encoders
+  // and every writer that copies a stored message require the Schema class instances.
+  // Without this a session that ever held a structured-output turn cannot be listed.
+  if (value.role === "user" && value.format) value.format = decodeFormat(value.format)
+  return value
+}
 
 const part = (row: typeof PartTable.$inferSelect) =>
   ({
