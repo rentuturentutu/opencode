@@ -48,7 +48,8 @@ const nativeIt = testEffect(
   ]),
 )
 
-// The experimental native request path builds its own request, so it needs the same relaxation.
+// The experimental native request path (openai and anthropic providers only) builds its own request,
+// so it needs the same relaxation as the AI SDK path.
 for (const modelID of [vision, "DeepSeek-V4.1-Flash"]) {
   nativeIt.live("native LLM path applies the forced tool choice rule: " + modelID, () =>
     Effect.gen(function* () {
@@ -94,7 +95,7 @@ for (const modelID of [vision, "DeepSeek-V4.1-Flash"]) {
           Effect.gen(function* () {
             const provider = yield* Provider.Service
             const llm = yield* LLM.Service
-            const providerID = ProviderV2.ID.make("oneapi-anthropic")
+            const providerID = ProviderV2.ID.make("anthropic")
             const model = yield* provider.getModel(providerID, ModelV2.ID.make(modelID))
             const sessionID = SessionID.make("ses_vision_native")
             yield* llm
@@ -134,11 +135,11 @@ for (const modelID of [vision, "DeepSeek-V4.1-Flash"]) {
           config: {
             formatter: false,
             lsp: false,
-            enabled_providers: ["oneapi-anthropic"],
+            enabled_providers: ["anthropic"],
             provider: {
-              "oneapi-anthropic": {
+              anthropic: {
                 ...fixture,
-                id: "oneapi-anthropic",
+                id: "anthropic",
                 npm: "@ai-sdk/anthropic",
                 models: {
                   [modelID]: {

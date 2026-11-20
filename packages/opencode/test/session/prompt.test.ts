@@ -1317,6 +1317,59 @@ noLLMServer.instance("concurrent aborts and new work wait for interrupted tool c
   }),
 )
 
+// Runner.cancel marks the runner idle before the interrupted work has finished its finalizers, so
+// work that arrives in that window would otherwise start next to the tools that are still draining.
+noLLMServer.instance("work that arrives during an abort drain starts only after the drain finished", () =>
+  Effect.gen(function* () {
+    const { run, chat } = yield* boot()
+    const started = yield* Deferred.make<void>()
+    const draining = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const seeded = yield* seed(chat.id, { finish: "stop" })
+    const result: SessionV1.WithParts = { info: seeded.assistant, parts: [] }
+    let nextStarted = false
+    yield* Effect.gen(function* () {
+      const old = yield* run
+        .ensureRunning(
+          chat.id,
+          Effect.succeed(result),
+          Effect.gen(function* () {
+            yield* Deferred.succeed(started, undefined)
+            return yield* Effect.never
+          }).pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                yield* Deferred.succeed(draining, undefined)
+                yield* Deferred.await(release)
+              }),
+            ),
+          ),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(started)
+      const cancelling = yield* run.cancel(chat.id).pipe(Effect.forkChild)
+      yield* Deferred.await(draining)
+      const next = yield* run
+        .ensureRunning(
+          chat.id,
+          Effect.succeed(result),
+          Effect.sync(() => {
+            nextStarted = true
+            return result
+          }),
+        )
+        .pipe(Effect.forkChild)
+      yield* Effect.sleep(Duration.millis(50))
+      expect(nextStarted).toBe(false)
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(cancelling)
+      yield* Fiber.join(old)
+      yield* Fiber.join(next)
+      expect(nextStarted).toBe(true)
+    }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)))
+  }),
+)
+
 // Cancel semantics
 
 it.instance("cancel interrupts loop and resolves with an assistant message", () =>
