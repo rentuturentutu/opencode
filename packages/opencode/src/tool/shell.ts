@@ -2,6 +2,7 @@ import { Effect, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
+import { browserEchoEnvironment } from "./browser-echo-env"
 import path from "path"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
@@ -422,6 +423,7 @@ export const ShellTool = Tool.define(
       return {
         ...process.env,
         ...extra.env,
+        ...browserEchoEnvironment(ctx.messages),
       }
     })
 

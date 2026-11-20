@@ -1196,3 +1196,12 @@ describe("tool.shell truncation", () => {
     ),
   )
 })
+
+it.live("host browser endpoint reaches actual shell child without model arguments", () =>
+ runIn(projectRoot, Effect.gen(function* () {
+  const result = yield* run({ command: `${bin} -e ${evalarg('console.log(process.env.JK3_BROWSER_CONTROL_ENDPOINT)')}` }, {
+   ...ctx, messages: [{info:{role:"user",metadata:{browser_echo_endpoint:"http://127.0.0.1:49123"}},parts:[]}] as any,
+  })
+  expect(result.output.trim()).toBe("http://127.0.0.1:49123")
+ })),
+)
