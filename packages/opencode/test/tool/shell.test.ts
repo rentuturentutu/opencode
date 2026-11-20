@@ -1215,6 +1215,35 @@ each("host browser endpoint reaches actual shell child without model arguments",
     }),
   ),
 )
+// A model that copies the endpoint recorded in skill.yaml into its own command would bypass the
+// per-turn proxy, so the desktop could not show the task window. The host endpoint wins.
+each("an explicit endpoint assignment cannot bypass the host turn endpoint", () =>
+  runIn(
+    projectRoot,
+    Effect.gen(function* () {
+      const direct = "http://127.0.0.1:19500"
+      const print = `${bin} -e ${evalarg("console.log(process.env.JK3_BROWSER_CONTROL_ENDPOINT)")}`
+      const kind = sh()
+      const command = PS.has(kind)
+        ? `$env:JK3_BROWSER_CONTROL_ENDPOINT="${direct}"; & ${print}`
+        : kind === "cmd"
+          ? `set JK3_BROWSER_CONTROL_ENDPOINT=${direct}&& ${print}`
+          : `JK3_BROWSER_CONTROL_ENDPOINT=${direct} ${print}`
+      const result = yield* run(
+        { command },
+        {
+          ...ctx,
+          messages: [
+            { info: { role: "user", metadata: { browser_echo_endpoint: "http://127.0.0.1:49123" } }, parts: [] },
+          ] as any,
+        },
+      )
+      expect(result.output.split(/\r?\n/)[0]).toBe("http://127.0.0.1:49123")
+      expect(result.output).not.toContain(direct)
+      expect(result.output).toContain("The host manages JK3_BROWSER_CONTROL_ENDPOINT")
+    }),
+  ),
+)
 
 // The runtime starts shells without a visible console. Such a console uses the
 // OEM code page (936/GBK on Chinese Windows) while the tool decodes UTF-8, so

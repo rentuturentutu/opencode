@@ -2,7 +2,7 @@ import { Effect, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
-import { browserEchoEnvironment } from "./browser-echo-env"
+import { browserEchoEnvironment, pinBrowserControlEndpoint } from "./browser-echo-env"
 import path from "path"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
@@ -439,6 +439,10 @@ export const ShellTool = Tool.define(
     ) {
       const limits = yield* trunc.limits()
       const keep = limits.maxBytes * 2
+      const endpoint = pinBrowserControlEndpoint(
+        input.command,
+        browserEchoEnvironment(ctx.messages).JK3_BROWSER_CONTROL_ENDPOINT,
+      )
       let full = ""
       let last = ""
       const list: Chunk[] = []
@@ -483,7 +487,7 @@ export const ShellTool = Tool.define(
       const code: number | null = yield* Effect.scoped(
         Effect.gen(function* () {
           yield* Effect.addFinalizer(closeSink)
-          const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
+          const handle = yield* spawner.spawn(cmd(input.shell, endpoint.command, input.cwd, input.env))
 
           yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
@@ -567,6 +571,11 @@ export const ShellTool = Tool.define(
         )
       }
       if (aborted) meta.push("User aborted the command")
+      if (endpoint.pinned) {
+        meta.push(
+          "The host manages JK3_BROWSER_CONTROL_ENDPOINT for this turn. Your assignment of it was replaced with this turn's control endpoint; do not set it yourself or write a port number into commands or scripts.",
+        )
+      }
       const raw = list.map((item) => item.text).join("")
       // Text that is not UTF-8 (a native tool printing in the console code page, a GBK file)
       // decodes to U+FFFD. Say so, so the model rereads it instead of acting on garbled text.
