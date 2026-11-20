@@ -32,6 +32,23 @@ export const markInstanceForDisposal = (ctx: InstanceContext) =>
     )
   })
 
+// POST /instance/dispose answers only after the teardown, including its `server.instance.disposed`
+// event, has finished. markInstanceForDisposal tears down after the response, so a client that
+// reconnects as soon as it has the answer attaches to the instance that is still being disposed
+// and is then told that its own, new request was interrupted. The pre-response handler runs
+// before the response exists, the same way a reload does.
+export const disposeInstanceBeforeResponse = (ctx: InstanceContext) =>
+  Effect.gen(function* () {
+    const marked = yield* mark(ctx)
+    return yield* HttpEffect.appendPreResponseHandler((_request, response) =>
+      Effect.as(
+        Effect.uninterruptible(marked.bridge.run(marked.store.dispose(marked.ctx))).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("instance disposal failed", { cause })),
+        ),
+        response,
+      ),
+    )
+  })
 export const markInstanceForReload = (ctx: InstanceContext, next: InstanceStore.LoadInput) =>
   Effect.gen(function* () {
     const marked = yield* mark(ctx)

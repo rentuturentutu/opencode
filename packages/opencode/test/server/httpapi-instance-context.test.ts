@@ -13,7 +13,11 @@ import { Workspace } from "../../src/control-plane/workspace"
 import { InstanceRef, WorkspaceRef } from "../../src/effect/instance-ref"
 import { Project } from "../../src/project/project"
 import { Session } from "../../src/session/session"
-import { disposeMiddleware, markInstanceForDisposal } from "../../src/server/routes/instance/httpapi/lifecycle"
+import {
+  disposeInstanceBeforeResponse,
+  disposeMiddleware,
+  markInstanceForDisposal,
+} from "../../src/server/routes/instance/httpapi/lifecycle"
 import {
   InstanceContextMiddleware,
   instanceContextLayer,
@@ -27,6 +31,7 @@ import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdirScoped } from "../fixture/fixture"
 import { withFixedWorkspaceID } from "../fixture/flag"
 import { workspaceLayerWithRuntimeFlags } from "../fixture/workspace"
+import { GlobalBus } from "../../src/bus/global"
 import { waitGlobalBusEvent } from "./global-bus"
 import { testEffect } from "../lib/effect"
 
@@ -103,6 +108,9 @@ const ProbeApi = HttpApi.make("instance-context-probe").add(
       HttpApiEndpoint.post("dispose", "/dispose-probe", {
         query: WorkspaceRoutingQuery,
         success: Schema.Boolean,
+      }),      HttpApiEndpoint.post("disposeBeforeResponse", "/dispose-before-response-probe", {
+        query: WorkspaceRoutingQuery,
+        success: Schema.Boolean,
       }),
     )
     .middleware(InstanceContextMiddleware)
@@ -119,6 +127,15 @@ const probeHandlers = HttpApiBuilder.group(ProbeApi, "probe", (handlers) =>
         const instance = yield* InstanceRef
         if (!instance) return false
         yield* markInstanceForDisposal(instance)
+        return true
+      }),
+    )
+    .handle(
+      "disposeBeforeResponse",
+      Effect.fn("InstanceContextProbe.disposeBeforeResponse")(function* () {
+        const instance = yield* InstanceRef
+        if (!instance) return false
+        yield* disposeInstanceBeforeResponse(instance)
         return true
       }),
     ),
@@ -347,6 +364,30 @@ describe("HttpApi instance context middleware", () => {
       expect(response.status).toBe(200)
       expect(yield* response.json).toBe(true)
       expect(yield* Fiber.join(disposed)).toEqual({ directory: workspaceDir, workspace: workspace.id })
+    }),
+  )
+
+  it.live("tears the instance down before a before-response disposal is answered", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      yield* Project.use.fromDirectory(dir)
+      yield* serveDisposeProbe()
+      let disposedEvents = 0
+      const listener = (event: { directory?: string; payload: { type?: string } }) => {
+        if (event.directory === dir && event.payload.type === "server.instance.disposed") disposedEvents++
+      }
+      GlobalBus.on("event", listener)
+      yield* Effect.addFinalizer(() => Effect.sync(() => GlobalBus.off("event", listener)))
+
+      const response = yield* HttpClientRequest.post("/dispose-before-response-probe").pipe(
+        HttpClientRequest.setHeader("x-opencode-directory", dir),
+        HttpClient.execute,
+      )
+
+      expect(response.status).toBe(200)
+      expect(yield* response.json).toBe(true)
+      // A client that reconnects right after the answer must not meet the old instance.
+      expect(disposedEvents).toBe(1)
     }),
   )
 })
