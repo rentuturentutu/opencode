@@ -516,6 +516,13 @@ const layer = Layer.effect(
               { enabled: true },
             )).enabled
           ) {
+            // The compaction marker is a bare user message. The rules of this
+            // turn live on the last real user message before it (or on an
+            // earlier continuation, which inherited them the same way).
+            const owner = input.messages
+              .slice(0, input.messages.findLastIndex((m) => m.info.id === input.parentID))
+              .findLast((m) => m.info.role === "user" && !m.parts.some((p) => p.type === "compaction"))?.info
+            const turn = owner?.role === "user" ? owner : userMessage
             const continueMsg = yield* session.updateMessage({
               id: MessageID.ascending(),
               role: "user",
@@ -523,6 +530,14 @@ const layer = Layer.effect(
               time: { created: Date.now() },
               agent: userMessage.agent,
               model: userMessage.model,
+              // The synthetic continuation belongs to the same user turn. Keep the
+              // host-supplied system rules and tool restrictions; otherwise every
+              // later step of the turn silently loses them after compaction.
+              format: turn.format,
+              tools: turn.tools,
+              system: turn.system,
+              // Keeps host metadata such as the per-turn browser echo endpoint.
+              metadata: turn.metadata,
             })
             const text =
               (input.overflow
