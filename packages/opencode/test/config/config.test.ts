@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto"
+import { Flag } from "@opencode-ai/core/flag/flag"
+import { Permission } from "../../src/permission"
+import { disposeInstance } from "../../src/effect/instance-registry"
 import { test, expect, describe, afterEach, beforeEach, spyOn } from "bun:test"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -2232,3 +2236,73 @@ test("parseManagedPlist handles empty config", async () => {
   )
   expect(config.$schema).toBe("https://opencode.ai/config.json")
 })
+
+// Transport integration deliberately uses the same Config.Service as production,
+// with only network/account/npm fixture services replaced (no real credentials).
+it.instance("raw CONTENT transport preserves all layer conflicts and instance-relative late reads", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const file = path.join(test.directory, "transport.jsonc")
+    const explicit = path.join(test.directory, "explicit.json")
+    const custom = path.join(test.directory, "custom")
+    const original = Flag.OPENCODE_CONFIG
+    Flag.OPENCODE_CONFIG = explicit
+    yield* Effect.addFinalizer(() => Effect.sync(() => { Flag.OPENCODE_CONFIG = original }))
+    const text = '{/* raw */"model":"content/wins","username":"{env:DGJ_CONTENT_LATE}{file:./relative.txt}","permission":{"bash":{"git *":"allow","*":"deny"},"*":"deny","edit":"ask"},"plugin":["./content-plugin.ts"],"instructions":["./policy.md"],"agent":{"task":{"prompt":' + JSON.stringify("policy\n".repeat(200000) + "{env:DGJ_CONTENT_LATE}{file:relative.txt}") + '}},}'
+    yield* FSUtil.use.writeWithDirs(file, text)
+    const transport = "dgj-config-content-v1:" + createHash("sha256").update(text).digest("hex") + ":" + Buffer.from(file).toString("base64url")
+    const globalFile = path.join(Global.Path.config, "opencode.json")
+    yield* FSUtil.use.writeWithDirs(globalFile, JSON.stringify(schemaConfig({model:"global/loses"})))
+    yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(globalFile, {force:true})))
+    yield* FSUtil.use.writeWithDirs(explicit, JSON.stringify(schemaConfig({model:"explicit/loses"})))
+    yield* FSUtil.use.writeWithDirs(path.join(test.directory, "opencode.json"), JSON.stringify(schemaConfig({model:"project/loses"})))
+    yield* FSUtil.use.writeWithDirs(path.join(test.directory, ".opencode/opencode.json"), JSON.stringify(schemaConfig({model:"dot/loses"})))
+    yield* FSUtil.use.writeWithDirs(path.join(custom, "opencode.json"), JSON.stringify(schemaConfig({model:"custom/loses"})))
+    yield* withProcessEnvs({ OPENCODE_CONFIG_DIR: custom, OPENCODE_CONFIG_CONTENT: transport }, Effect.gen(function* () {
+      for (const suffix of ["first", "later"]) {
+        yield* FSUtil.use.writeWithDirs(path.join(test.directory, "relative.txt"), " file-" + suffix + "\n")
+        yield* withProcessEnv("DGJ_CONTENT_LATE", suffix, Effect.gen(function* () {
+          yield* Config.use.invalidate()
+          yield* Effect.promise(() => disposeInstance(test.directory))
+          const actual = yield* Config.use.get()
+          expect(actual.model).toBe("content/wins")
+          expect(actual.username).toBe(suffix + "file-" + suffix)
+          expect(actual.agent?.task.prompt?.endsWith(suffix + "file-" + suffix)).toBe(true)
+          expect(Object.keys(actual.permission!)).toEqual(["bash", "*", "edit"])
+          expect(Permission.evaluate("bash", "git status", Permission.fromConfig(actual.permission!)).action).toBe("deny")
+          expect(actual.plugin_origins?.find(item => item.source === "OPENCODE_CONFIG_CONTENT")?.scope).toBe("local")
+          expect(actual.plugin).toContain("./content-plugin.ts")
+          expect(actual.instructions).toContain("./policy.md")
+          yield* withProcessEnv("OPENCODE_CONFIG_CONTENT", text, Effect.gen(function* () {
+            yield* Config.use.invalidate()
+          yield* Effect.promise(() => disposeInstance(test.directory))
+            const inline = yield* Config.use.get()
+            expect(JSON.stringify(actual) === JSON.stringify(inline)).toBe(true)
+          }))
+        }))
+      }
+      // A second instance lazily reads the SAME transport with its own base dir.
+      const second = path.join(test.directory, "second-instance")
+      yield* FSUtil.use.writeWithDirs(path.join(second, "relative.txt"), " second-instance-file ")
+      yield* withProcessEnv("DGJ_CONTENT_LATE", "second-", Effect.gen(function* () {
+        const next = yield* Config.use.get().pipe(provideInstanceEffect(second))
+        expect(next.username).toBe("second-second-instance-file")
+        expect(next.agent?.task.prompt?.endsWith("second-second-instance-file")).toBe(true)
+      }))
+      yield* withProcessEnv("OPENCODE_PERMISSION", '{"bash":"ask"}', Effect.gen(function* () {
+        yield* Effect.promise(() => disposeInstance(test.directory))
+        expect((yield* Config.use.get()).permission?.bash).toBe("ask")
+      }))
+      yield* FSUtil.use.writeWithDirs(path.join(managedConfigDir, "opencode.json"), JSON.stringify(schemaConfig({model:"managed/wins"})))
+      yield* Config.use.invalidate()
+          yield* Effect.promise(() => disposeInstance(test.directory))
+      expect((yield* Config.use.get()).model).toBe("managed/wins")
+      yield* Effect.promise(() => fs.rm(file))
+      yield* Config.use.invalidate()
+          yield* Effect.promise(() => disposeInstance(test.directory))
+      // Missing CONTENT may not fall through even to valid/managed lower layers.
+      const failed = yield* Effect.exit(Config.use.get())
+      expect(Exit.isFailure(failed)).toBe(true)
+    }))
+  }),
+)

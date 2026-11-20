@@ -30,6 +30,7 @@ import { ConfigAgent } from "./agent"
 import { ConfigCommand } from "./command"
 import { ConfigManaged } from "./managed"
 import { ConfigParse } from "./parse"
+import { ConfigContent } from "./content"
 import { ConfigPaths } from "./paths"
 import { ConfigPlugin } from "./plugin"
 import { ConfigVariable } from "./variable"
@@ -481,7 +482,10 @@ const layer = Layer.effect(
 
         if (process.env.OPENCODE_CONFIG_CONTENT) {
           const source = "OPENCODE_CONFIG_CONTENT"
-          const next = yield* loadConfig(process.env.OPENCODE_CONFIG_CONTENT, {
+          // Resolve raw transport here, not at process startup or as a file config:
+          // CONTENT keeps its original precedence, source and instance directory.
+          const text = yield* Effect.promise(() => ConfigContent.read(process.env.OPENCODE_CONFIG_CONTENT!))
+          const next = yield* loadConfig(text, {
             dir: ctx.directory,
             source,
           })
