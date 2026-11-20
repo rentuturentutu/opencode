@@ -546,7 +546,8 @@ const layer = Layer.effect(
                 ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
                 : "") +
               "Internal context compaction is complete; this is not a new user request or a request for a progress report. " +
-              "Continue the latest user-authorized task from its unfinished steps. Recent tool results after the summary take precedence over the summary for current state; never reuse stale input handles. " +
+              "Continue the latest user-authorized task from its unfinished steps. Task rules and user corrections supplied in the system prompt remain in force and take precedence over the summary. " +
+              "Recent tool results after the summary take precedence over the summary for current state; never reuse stale input handles. " +
               "Do not stop at an intermediate milestone or ask permission again for steps already requested. Stop or ask only for a genuine blocker, missing required information, a required confirmation, or a user stop instruction. " +
               "When finished, verify the original completion conditions and report the actual outcome, including anything not completed."
             yield* session.updatePart({

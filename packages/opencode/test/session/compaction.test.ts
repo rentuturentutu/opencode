@@ -931,6 +931,9 @@ describe("session.compaction.process", () => {
       })
       if (last?.parts[0]?.type === "text") {
         expect(last.parts[0].text).toContain("Continue the latest user-authorized task from its unfinished steps")
+        expect(last.parts[0].text).toContain(
+          "Task rules and user corrections supplied in the system prompt remain in force and take precedence over the summary",
+        )
         expect(last.parts[0].text).toContain("Recent tool results after the summary take precedence")
         expect(last.parts[0].text).toContain("required confirmation")
         expect(last.parts[0].text).toContain("user stop instruction")
