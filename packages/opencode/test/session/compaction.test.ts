@@ -930,7 +930,11 @@ describe("session.compaction.process", () => {
         metadata: { compaction_continue: true },
       })
       if (last?.parts[0]?.type === "text") {
-        expect(last.parts[0].text).toContain("Continue if you have next steps")
+        expect(last.parts[0].text).toContain("Continue the latest user-authorized task from its unfinished steps")
+        expect(last.parts[0].text).toContain("Recent tool results after the summary take precedence")
+        expect(last.parts[0].text).toContain("required confirmation")
+        expect(last.parts[0].text).toContain("user stop instruction")
+        expect(last.parts[0].text).not.toContain("stop and ask for clarification if you are unsure")
       }
     }),
   )
@@ -1127,7 +1131,7 @@ describe("session.compaction.process", () => {
           (msg) =>
             msg.info.role === "user" &&
             msg.parts.some(
-              (part) => part.type === "text" && part.synthetic && part.text.includes("Continue if you have next steps"),
+              (part) => part.type === "text" && part.synthetic && part.text.includes("Internal context compaction is complete"),
             ),
         ),
       ).toBe(false)
