@@ -168,6 +168,208 @@ function reply(
 }
 
 describe("tool.task", () => {
+  it.instance("desktop joined branches overlap and inherit host context without enabling denied tools", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      yield* sessions.setPermission({
+        sessionID: chat.id,
+        permission: [
+          { permission: "write", pattern: "*", action: "ask" },
+          { permission: "write", pattern: "/protected/*", action: "deny" },
+        ],
+      })
+      const user = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+        system: "Require confirmation before submission",
+        metadata: { replay_session_id: "replay-test", browser_echo_endpoint: "http://127.0.0.1:12345" },
+        tools: { dangerous: false, bash: true },
+      })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const started = defer<void>()
+      const release = defer<void>()
+      const seen: SessionPrompt.PromptInput[] = []
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (text) => Effect.succeed([{ type: "text", text }]),
+        prompt: (input) =>
+          Effect.promise(async () => {
+            seen.push(input)
+            if (seen.length === 2) started.resolve()
+            await release.promise
+            return reply(input, "prepared, not submitted")
+          }),
+      }
+      const branches = yield* Effect.all(
+        ["browser", "computer"].map((name) =>
+          def.execute(
+            {
+              description: name,
+              prompt: name,
+              subagent_type: "general",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [{ info: user, parts: [] }],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          ),
+        ),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkChild)
+      yield* Effect.promise(() => started.promise)
+      expect(seen).toHaveLength(2)
+      expect(seen[0]!.sessionID).not.toBe(seen[1]!.sessionID)
+      for (const input of seen) {
+        expect(input.system).toBe("Require confirmation before submission")
+        expect(input.metadata?.browser_echo_endpoint).toBe("http://127.0.0.1:12345")
+        expect(input.tools).toBeUndefined()
+        const child = yield* sessions.get(input.sessionID)
+        expect(child.permission).toContainEqual({ permission: "dangerous", pattern: "*", action: "deny" })
+        expect(child.permission).toContainEqual({ permission: "write", pattern: "/protected/*", action: "deny" })
+        expect(child.permission).toContainEqual({ permission: "write", pattern: "*", action: "ask" })
+      }
+      release.resolve()
+      expect(yield* Fiber.join(branches)).toHaveLength(2)
+    }),
+  )
+
+  it.instance("desktop delegation cannot detach or resume another parent's task", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const other = yield* sessions.create({ title: "unrelated" })
+      const child = yield* sessions.create({ parentID: other.id, title: "other child" })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const user = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+        metadata: { replay_session_id: "replay-test" },
+      })
+      for (const args of [{ background: true }, { task_id: child.id }]) {
+        const result = yield* def
+          .execute(
+            { description: "branch", prompt: "no effects", subagent_type: "general", ...args },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps() },
+              messages: [{ info: user, parts: [] }],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(result)).toBe(true)
+      }
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+  )
+
+  it.instance("one stop cancels both joined desktop branches", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const abort = new AbortController()
+      const ready = defer<void>()
+      const cancelled = new Map<SessionID, ReturnType<typeof defer<void>>>()
+      const user = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+        metadata: { replay_session_id: "replay-test" },
+      })
+      const ops: TaskPromptOps = {
+        cancel: (id) =>
+          Effect.sync(() => {
+            cancelled.get(id)?.resolve()
+          }),
+        resolvePromptParts: (text) => Effect.succeed([{ type: "text", text }]),
+        prompt: (input) =>
+          Effect.promise(async () => {
+            const stop = defer<void>()
+            cancelled.set(input.sessionID, stop)
+            if (cancelled.size === 2) ready.resolve()
+            await stop.promise
+            return reply(input, "stopped")
+          }),
+      }
+      const running = yield* Effect.all(
+        ["a", "b"].map((description) =>
+          def.execute(
+            { description, prompt: description, subagent_type: "general" },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: abort.signal,
+              extra: { promptOps: ops },
+              messages: [{ info: user, parts: [] }],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          ),
+        ),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkChild)
+      yield* Effect.promise(() => ready.promise)
+      abort.abort()
+      expect(yield* Fiber.join(running)).toHaveLength(2)
+      expect(cancelled.size).toBe(2)
+    }),
+  )
+
+  it.instance("already cancelled desktop dispatch creates no child", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const abort = new AbortController()
+      abort.abort()
+      const result = yield* def
+        .execute(
+          { description: "stopped", prompt: "never", subagent_type: "general" },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: abort.signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(result)).toBe(true)
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+  )
+
   it.instance(
     "description sorts subagents by name and is stable across calls",
     () =>

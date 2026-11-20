@@ -95,6 +95,19 @@ export const TaskTool = Tool.define(
     ) {
       const cfg = yield* config.get()
       const runInBackground = params.background === true
+      const source = ctx.messages.findLast((message) => message.info.role === "user")
+      const inherited = source?.info.role === "user" ? source.info : undefined
+      const desktop =
+        typeof inherited?.metadata?.browser_echo_endpoint === "string" ||
+        String(inherited?.metadata?.replay_session_id ?? "").startsWith("replay_")
+      // Desktop branches stay inside the parent tool lifetime. Experimental
+      // detached jobs cannot outlive the host's input lease / confirmation UI.
+      if (desktop && runInBackground) {
+        return yield* Effect.fail(
+          new Error("Desktop tasks must be joined; omit background and launch independent task calls in the same turn"),
+        )
+      }
+      if (ctx.abort.aborted) return yield* Effect.fail(new Error("Task cancelled before dispatch"))
       if (runInBackground && !flags.experimentalBackgroundSubagents) {
         return yield* Effect.fail(
           new Error("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
@@ -136,6 +149,9 @@ export const TaskTool = Tool.define(
       const session = params.task_id
         ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
         : undefined
+      if (session && session.parentID !== ctx.sessionID) {
+        return yield* Effect.fail(new Error("Task belongs to a different parent session"))
+      }
       const childPermission = deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],
         subagent: next,
@@ -198,6 +214,22 @@ export const TaskTool = Tool.define(
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
+        if (ctx.abort.aborted) return yield* Effect.fail(new Error("Task cancelled before dispatch"))
+        if (desktop) {
+          // PromptInput.tools replaces the entire session ruleset. Do not use
+          // it here: preserve parent path denies / inherited confirmation rules.
+          yield* sessions.setPermission({
+            sessionID: nextSession.id,
+            permission: [
+              ...(parent.permission ?? []).filter((rule) => rule.action === "ask"),
+              ...childPermission,
+              ...childToolDenies,
+              ...Object.entries(inherited?.tools ?? {}).flatMap(([permission, enabled]) =>
+                enabled ? [] : [{ permission, pattern: "*", action: "deny" as const }],
+              ),
+            ],
+          })
+        }
         const parts = yield* ops.resolvePromptParts(params.prompt)
         const result = yield* ops.prompt({
           messageID: MessageID.ascending(),
@@ -208,7 +240,25 @@ export const TaskTool = Tool.define(
           },
           variant: next.model ? undefined : variant,
           agent: next.name,
-          parts,
+          // Host context is not model-authored delegation text. In particular,
+          // every branch must use the same revocable browser proxy and trace.
+          ...(desktop
+            ? {
+                system: inherited?.system,
+                metadata: inherited?.metadata,
+              }
+            : {}),
+          parts: desktop
+            ? [
+                {
+                  type: "text",
+                  text:
+                    "主任务原始用户请求（用于范围、授权和确认边界，不重复执行其他分支）：\n" +
+                    (source?.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n") ?? ""),
+                },
+                ...parts,
+              ]
+            : parts,
         })
         if (result.info.role === "assistant" && result.info.error) {
           const message =
@@ -264,7 +314,7 @@ export const TaskTool = Tool.define(
         )
       })
 
-      if (yield* background.extend({ id: nextSession.id, run: runTask() })) {
+      if (!desktop && (yield* background.extend({ id: nextSession.id, run: runTask() }))) {
         return {
           title: params.description,
           metadata: {
@@ -286,13 +336,15 @@ export const TaskTool = Tool.define(
         type: id,
         title: params.description,
         metadata,
-        onPromote: Effect.all([
-          ctx.metadata({
-            title: params.description,
-            metadata: { ...metadata, background: true, jobId: nextSession.id },
-          }),
-          notify(nextSession.id),
-        ]),
+        onPromote: desktop
+          ? Effect.void
+          : Effect.all([
+              ctx.metadata({
+                title: params.description,
+                metadata: { ...metadata, background: true, jobId: nextSession.id },
+              }),
+              notify(nextSession.id),
+            ]),
         run: runTask().pipe(Effect.onInterrupt(() => ops.cancel(nextSession.id))),
       })
 
@@ -328,14 +380,15 @@ export const TaskTool = Tool.define(
       return yield* Effect.acquireUseRelease(
         Effect.sync(() => {
           ctx.abort.addEventListener("abort", onAbort)
+          if (ctx.abort.aborted) onAbort()
         }),
         () =>
           Effect.gen(function* () {
-            const result = yield* Effect.raceFirst(
-              background.wait({ id: nextSession.id }).pipe(Effect.map((waited) => waited.info)),
-              background.waitForPromotion(nextSession.id),
-            )
-            if (result?.metadata?.background === true) return backgroundResult()
+            const waiting = background.wait({ id: nextSession.id }).pipe(Effect.map((waited) => waited.info))
+            const result = yield* desktop
+              ? waiting
+              : Effect.raceFirst(waiting, background.waitForPromotion(nextSession.id))
+            if (!desktop && result?.metadata?.background === true) return backgroundResult()
             if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
             if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
             return {
