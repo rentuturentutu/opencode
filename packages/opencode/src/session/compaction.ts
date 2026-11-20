@@ -478,6 +478,8 @@ const layer = Layer.effect(
             format: original.format,
             tools: original.tools,
             system: original.system,
+            // The replayed prompt is the same user turn; keep host metadata such as the browser echo endpoint.
+            metadata: original.metadata,
           })
           for (const part of replay.parts) {
             if (part.type === "compaction") continue
