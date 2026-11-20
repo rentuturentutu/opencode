@@ -12,6 +12,7 @@ import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/se
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { QuestionID } from "../../src/question/schema"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
+import { GlobalBus } from "../../src/bus/global"
 import { HEADER as FenceHeader } from "../../src/server/shared/fence"
 import { resetDatabase } from "../fixture/db"
 import { tmpdirScoped } from "../fixture/fixture"
@@ -260,6 +261,32 @@ describe("instance HttpApi", () => {
       expect(yield* diff.json).toContainEqual(
         expect.objectContaining({ file: "changed.txt", additions: 1, status: "added" }),
       )
+    }),
+  )
+
+  // A client that reconnects as soon as it has the answer must not attach to the instance that is
+  // still being disposed. The server runs without the after-response disposal middleware here, so
+  // only a teardown that happens before the response can emit the event in time.
+  it.live("answers POST /instance/dispose after the instance was torn down", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const loaded = yield* HttpClientRequest.get(InstancePaths.path).pipe(directoryHeader(dir), HttpClient.execute)
+      expect(loaded.status).toBe(200)
+      let disposedEvents = 0
+      const listener = (event: { directory?: string; payload: { type?: string } }) => {
+        if (event.directory === dir && event.payload.type === "server.instance.disposed") disposedEvents++
+      }
+      GlobalBus.on("event", listener)
+      yield* Effect.addFinalizer(() => Effect.sync(() => GlobalBus.off("event", listener)))
+
+      const response = yield* HttpClientRequest.post(InstancePaths.dispose).pipe(
+        directoryHeader(dir),
+        HttpClient.execute,
+      )
+
+      expect(response.status).toBe(200)
+      expect(yield* response.json).toBe(true)
+      expect(disposedEvents).toBe(1)
     }),
   )
 })

@@ -1259,6 +1259,59 @@ describe("session.compaction.process", () => {
     }),
   )
 
+  it.instance(
+    "keeps the replayed turn's rules, tool limits, format and host metadata on the overflow replay",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const rules = "TASK-RULES: only use the declared month field; never submit"
+      const outputSchema = { type: "object", properties: { text: { type: "string" } }, required: ["text"] }
+      yield* createUserMessage(session.id, "root")
+      const replay = yield* ssn.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: session.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+        system: rules,
+        tools: { bash: false },
+        format: new SessionV1.OutputFormatJsonSchema({ type: "json_schema", retryCount: 2, schema: outputSchema }),
+        metadata: { browser_echo_endpoint: "http://127.0.0.1:49123" },
+      })
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: replay.id,
+        sessionID: session.id,
+        type: "text",
+        text: "long task",
+      })
+      const msg = yield* createUserMessage(session.id, "current")
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+
+      const result = yield* SessionCompaction.use.process({
+        parentID: msg.id,
+        messages: msgs,
+        sessionID: session.id,
+        auto: true,
+        overflow: true,
+      })
+
+      const listed = yield* ssn.messages({ sessionID: session.id })
+      const last = listed.at(-1)
+      expect(result).toBe("continue")
+      expect(last?.info.role).toBe("user")
+      if (last?.info.role !== "user") throw new Error("missing replayed turn")
+      expect(last.info.id).not.toBe(replay.id)
+      expect(last.parts.some((part) => part.type === "text" && part.text === "long task")).toBe(true)
+      expect(last.info.system).toBe(rules)
+      expect(last.info.tools).toEqual({ bash: false })
+      expect(last.info.format).toBeInstanceOf(SessionV1.OutputFormatJsonSchema)
+      expect(last.info.format).toEqual({ type: "json_schema", retryCount: 2, schema: outputSchema })
+      expect(last.info.metadata).toEqual({ browser_echo_endpoint: "http://127.0.0.1:49123" })
+    }),
+  )
+
   itCompaction.instance(
     "stops quickly when aborted during retry backoff",
     () => {

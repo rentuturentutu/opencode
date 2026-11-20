@@ -3,6 +3,7 @@ import { describe, expect } from "bun:test"
 import { Context, Effect, Layer, Option } from "effect"
 import { HttpBody, HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { Installation } from "../../src/installation"
@@ -43,6 +44,20 @@ const apiLayer = HttpRouter.serve(
 const it = testEffect(apiLayer)
 
 describe("global HttpApi", () => {
+  // The host reads this before it relies on skills.excludedPaths to switch a personal skill off.
+  it.live("reports the skill path exclusion capability on the health check", () =>
+    Effect.gen(function* () {
+      const response = yield* HttpClientRequest.get(GlobalPaths.health).pipe(HttpClient.execute)
+
+      expect(response.status).toBe(200)
+      expect(yield* response.json).toEqual({
+        healthy: true,
+        version: InstallationVersion,
+        capabilities: { skillPathExclusions: true },
+      })
+    }),
+  )
+
   it.live("upgrades to the requested version", () =>
     Effect.gen(function* () {
       const response = yield* HttpClientRequest.post(GlobalPaths.upgrade).pipe(

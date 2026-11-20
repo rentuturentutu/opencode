@@ -10,6 +10,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { LLM } from "@/session/llm"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
@@ -41,6 +42,121 @@ describe("Vision tool choice compatibility", () => {
 
 afterEach(disposeAllInstances)
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([LLM.node, Provider.node, CrossSpawnSpawner.node])))
+const nativeIt = testEffect(
+  AppNodeBuilder.build(LayerNode.group([LLM.node, Provider.node, CrossSpawnSpawner.node]), [
+    [RuntimeFlags.node, RuntimeFlags.layer({ experimentalNativeLlm: true })],
+  ]),
+)
+
+// The experimental native request path builds its own request, so it needs the same relaxation.
+for (const modelID of [vision, "DeepSeek-V4.1-Flash"]) {
+  nativeIt.live("native LLM path applies the forced tool choice rule: " + modelID, () =>
+    Effect.gen(function* () {
+      const requests: Record<string, unknown>[] = []
+      const frames = [
+        {
+          type: "message_start",
+          message: {
+            id: "native-diagnostic",
+            type: "message",
+            role: "assistant",
+            model: modelID,
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 10, output_tokens: 0 },
+          },
+        },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } },
+        { type: "message_stop" },
+      ]
+        .map((frame) => "data: " + JSON.stringify(frame) + "\n\n")
+        .join("")
+      const server = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          Bun.serve({
+            port: 0,
+            hostname: "127.0.0.1",
+            async fetch(req) {
+              requests.push((await req.json()) as Record<string, unknown>)
+              return new Response(frames, { headers: { "content-type": "text/event-stream" } })
+            },
+          }),
+        ),
+        (server) => Effect.sync(() => server.stop(true)),
+      )
+      const fixture = testProviderConfig(server.url.toString()).provider.test
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const provider = yield* Provider.Service
+            const llm = yield* LLM.Service
+            const providerID = ProviderV2.ID.make("oneapi-anthropic")
+            const model = yield* provider.getModel(providerID, ModelV2.ID.make(modelID))
+            const sessionID = SessionID.make("ses_vision_native")
+            yield* llm
+              .stream({
+                user: {
+                  id: MessageID.make("msg_vision_native"),
+                  sessionID,
+                  role: "user",
+                  time: { created: 1 },
+                  agent: "test",
+                  model: { providerID, modelID: model.id },
+                },
+                sessionID,
+                model,
+                agent: {
+                  name: "test",
+                  mode: "primary",
+                  options: {},
+                  permission: [{ permission: "*", pattern: "*", action: "allow" }],
+                },
+                system: ["Reply OK."],
+                messages: [{ role: "user", content: [{ type: "text", text: "Reply OK" }] }],
+                tools: {
+                  read_only_probe: tool({
+                    description: "Read-only diagnostic tool",
+                    inputSchema: jsonSchema({ type: "object", properties: {} }),
+                  }),
+                },
+                toolChoice: "required",
+                retries: 0,
+              })
+              .pipe(Stream.runCollect)
+            expect(requests).toHaveLength(1)
+            expect(requests[0].tool_choice).toEqual({ type: modelID === vision ? "auto" : "any" })
+          }),
+        {
+          config: {
+            formatter: false,
+            lsp: false,
+            enabled_providers: ["oneapi-anthropic"],
+            provider: {
+              "oneapi-anthropic": {
+                ...fixture,
+                id: "oneapi-anthropic",
+                npm: "@ai-sdk/anthropic",
+                models: {
+                  [modelID]: {
+                    ...fixture.models["test-model"],
+                    id: modelID,
+                    attachment: true,
+                    limit: { context: 128000, output: 8192 },
+                    modalities: { input: ["text", "image"], output: ["text"] },
+                  },
+                },
+              },
+            },
+          },
+        },
+      )
+    }),
+  )
+}
 
 for (const modelID of [vision, "DeepSeek-V4.1-Flash"]) {
   it.live("serializes real LLM request and retains structured tools: " + modelID, () =>

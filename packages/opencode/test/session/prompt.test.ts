@@ -6,7 +6,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -647,6 +647,30 @@ it.instance("prompt keeps host metadata on the user message", () =>
   }),
 )
 
+// The HTTP API decodes the request body and the event encoders decode stored messages with
+// these schemas, so a field they do not declare never reaches the model turn.
+it.instance("prompt input and user message schemas keep host metadata", () =>
+  Effect.sync(() => {
+    const metadata = { browser_echo_endpoint: "http://127.0.0.1:49123", replay_session_id: "replay_schema" }
+    const input = Schema.decodeUnknownSync(SessionPrompt.PromptInput)({
+      sessionID: SessionID.make("session-metadata-schema"),
+      parts: [{ type: "text", text: "hello" }],
+      metadata,
+    })
+    expect(input.metadata).toEqual(metadata)
+    const stored = Schema.decodeUnknownSync(SessionV1.User)({
+      id: MessageID.ascending(),
+      sessionID: SessionID.make("session-metadata-schema"),
+      role: "user",
+      time: { created: 1 },
+      agent: "build",
+      model: { providerID: "test", modelID: "test-model" },
+      metadata,
+    })
+    expect(stored.metadata).toEqual(metadata)
+  }),
+)
+
 it.instance("loop surfaces content-filter finishes as session errors", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
@@ -1032,6 +1056,48 @@ it.instance("subtask child inherits parent session external_directory allow", ()
     )
     expect(Permission.evaluate("external_directory", "/tmp/allowed/file", rules).action).toBe("allow")
     expect(Permission.evaluate("task", "anything", rules).action).toBe("deny")
+  }),
+)
+
+it.instance("slash command subtask summary prompt keeps the turn's host metadata", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Command summary" })
+    yield* llm.text("subtask done")
+    yield* llm.text("summary done")
+    const metadata = { browser_echo_endpoint: "http://127.0.0.1:49123" }
+    const msg = yield* sessions.updateMessage({
+      id: MessageID.ascending(),
+      role: "user",
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      time: { created: Date.now() },
+      metadata,
+    })
+    yield* sessions.updatePart({
+      id: PartID.ascending(),
+      messageID: msg.id,
+      sessionID: chat.id,
+      type: "subtask",
+      prompt: "look into the cache key path",
+      description: "inspect bug",
+      agent: "general",
+      model: ref,
+      command: "inspect",
+    })
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const summary = (yield* sessions.messages({ sessionID: chat.id })).find(
+      (item) =>
+        item.info.role === "user" &&
+        item.parts.some((part) => part.type === "text" && part.text.startsWith("Summarize the task tool output above")),
+    )
+    expect(summary?.info.role).toBe("user")
+    expect(summary?.info.role === "user" && summary.info.metadata).toEqual(metadata)
   }),
 )
 

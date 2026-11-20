@@ -89,6 +89,27 @@ it("preserves non-empty invalid JSON for the SDK to reject", async () => {
   expect(await response.text()).toContain("data: {not-json}")
 })
 
+it("cancels the upstream body when the consumer cancels the wrapped stream", async () => {
+  let cancelledWith: unknown
+  const upstream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: message_start\ndata: {"type":"message_start"}\n\n'))
+    },
+    cancel(reason) {
+      cancelledWith = reason
+    },
+  })
+  const response = OneAPIStream.wrapOneAPIAnthropicStream(
+    new Response(upstream, { status: 200, headers: { "content-type": "text/event-stream" } }),
+  )
+  const reader = response.body!.getReader()
+  expect((await reader.read()).done).toBe(false)
+
+  await reader.cancel("consumer stopped")
+
+  expect(cancelledWith).toBe("consumer stopped")
+})
+
 function providerConfig(url: string) {
   return {
     formatter: false,

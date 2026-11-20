@@ -3,7 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Cause, Deferred, Effect, Exit, Fiber } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -187,7 +187,7 @@ describe("tool.task", () => {
         model: ref,
         time: { created: Date.now() },
         system: "Require confirmation before submission",
-        metadata: { replay_session_id: "replay-test", browser_echo_endpoint: "http://127.0.0.1:12345" },
+        metadata: { replay_session_id: "replay_test", browser_echo_endpoint: "http://127.0.0.1:12345" },
         tools: { dangerous: false, bash: true },
       })
       const tool = yield* TaskTool
@@ -260,9 +260,13 @@ describe("tool.task", () => {
         agent: "build",
         model: ref,
         time: { created: Date.now() },
-        metadata: { replay_session_id: "replay-test" },
+        metadata: { replay_session_id: "replay_test" },
       })
-      for (const args of [{ background: true }, { task_id: child.id }]) {
+      const refusals = [
+        { args: { background: true }, reason: "Desktop tasks must be joined" },
+        { args: { task_id: child.id }, reason: "Task belongs to a different parent session" },
+      ]
+      for (const { args, reason } of refusals) {
         const result = yield* def
           .execute(
             { description: "branch", prompt: "no effects", subagent_type: "general", ...args },
@@ -279,6 +283,7 @@ describe("tool.task", () => {
           )
           .pipe(Effect.exit)
         expect(Exit.isFailure(result)).toBe(true)
+        if (Exit.isFailure(result)) expect(String(Cause.squash(result.cause))).toContain(reason)
       }
       expect(yield* sessions.children(chat.id)).toHaveLength(0)
     }),
@@ -300,7 +305,7 @@ describe("tool.task", () => {
         agent: "build",
         model: ref,
         time: { created: Date.now() },
-        metadata: { replay_session_id: "replay-test" },
+        metadata: { replay_session_id: "replay_test" },
       })
       const ops: TaskPromptOps = {
         cancel: (id) =>
@@ -367,6 +372,144 @@ describe("tool.task", () => {
         .pipe(Effect.exit)
       expect(Exit.isFailure(result)).toBe(true)
       expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+  )
+
+  it.instance("a promoted desktop branch stays joined and reports only through its own result", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const user = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+        metadata: { replay_session_id: "replay_test" },
+      })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const ready = yield* Deferred.make<void>()
+      const done = yield* Deferred.make<void>()
+      const parentPrompts: SessionPrompt.PromptInput[] = []
+      const reported: unknown[] = []
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          if (input.sessionID === chat.id) {
+            parentPrompts.push(input)
+            return Effect.succeed(reply(input, "injected"))
+          }
+          return Effect.gen(function* () {
+            yield* Deferred.succeed(ready, undefined)
+            yield* Deferred.await(done)
+            return reply(input, "branch result")
+          })
+        },
+      }
+
+      const fiber = yield* def
+        .execute(
+          { description: "branch", prompt: "inspect", subagent_type: "general" },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [{ info: user, parts: [] }],
+            metadata: (value) =>
+              Effect.sync(() => {
+                reported.push(value)
+              }),
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.forkChild)
+
+      yield* Deferred.await(ready)
+      const job = (yield* jobs.list())[0]
+      if (!job) throw new Error("task job not found")
+      yield* jobs.promote(job.id)
+      // The parent turn must keep waiting for the branch after the job was promoted.
+      const early = yield* Fiber.await(fiber).pipe(Effect.timeoutOption(Duration.millis(100)))
+      expect(early._tag).toBe("None")
+
+      yield* Deferred.succeed(done, undefined)
+      const result = yield* Fiber.join(fiber)
+      expect(result.metadata.background).toBeUndefined()
+      expect(result.output).toContain(`state="completed"`)
+      expect(result.output).toContain("branch result")
+      yield* Effect.sleep(Duration.millis(100))
+      // A detached branch would report back to the parent session later and mark itself as background.
+      expect(parentPrompts).toHaveLength(0)
+      expect(JSON.stringify(reported)).not.toContain('"background":true')
+    }),
+  )
+
+  it.instance("a desktop task_id that names a running branch joins it instead of queueing behind it", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const user = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+        metadata: { replay_session_id: "replay_test" },
+      })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const ready = yield* Deferred.make<void>()
+      const done = yield* Deferred.make<void>()
+      let runs = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.gen(function* () {
+            runs += 1
+            yield* Deferred.succeed(ready, undefined)
+            yield* Deferred.await(done)
+            return reply(input, "branch result")
+          }),
+      }
+      const toolContext = (): Parameters<typeof def.execute>[1] => ({
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "build",
+        abort: new AbortController().signal,
+        extra: { promptOps },
+        messages: [{ info: user, parts: [] }],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      })
+
+      const first = yield* def
+        .execute({ description: "branch", prompt: "inspect", subagent_type: "general" }, toolContext())
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(ready)
+      const child = (yield* sessions.children(chat.id))[0]
+      if (!child) throw new Error("child session not found")
+      const second = yield* def
+        .execute(
+          { description: "branch", prompt: "inspect again", subagent_type: "general", task_id: child.id },
+          toolContext(),
+        )
+        .pipe(Effect.forkChild)
+
+      // Resuming a running desktop branch waits for that branch like the first call does.
+      const early = yield* Fiber.await(second).pipe(Effect.timeoutOption(Duration.millis(100)))
+      expect(early._tag).toBe("None")
+      yield* Deferred.succeed(done, undefined)
+      const results = yield* Effect.all([Fiber.join(first), Fiber.join(second)])
+      for (const result of results) expect(result.output).toContain("branch result")
+      expect(runs).toBe(1)
     }),
   )
 

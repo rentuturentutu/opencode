@@ -55,6 +55,41 @@ test("retains numeric gateway code and uses the nested message for classificatio
   expect(result.statusCode).toBeUndefined()
 })
 
+test("classifies authentication, upstream and timeout failures without echoing their messages", () => {
+  const category = (error: unknown) => providerErrorSummary({ error }).category
+  expect(category({ statusCode: 401, message: "secret key rejected" })).toBe("authentication_or_permission")
+  expect(category({ statusCode: 403 })).toBe("authentication_or_permission")
+  expect(category({ type: "permission_error" })).toBe("authentication_or_permission")
+  expect(category({ statusCode: 502 })).toBe("upstream_unavailable")
+  expect(category({ statusCode: 503, message: "request timed out" })).toBe("upstream_unavailable")
+  expect(category(new Error("request timed out"))).toBe("timeout")
+  expect(category(new Error("something unexpected"))).toBe("provider_error")
+  expect(
+    JSON.stringify(providerErrorSummary({ error: { statusCode: 401, message: "secret key rejected" } })),
+  ).not.toContain("secret")
+})
+
+test("reports no request size when the request body cannot be serialised", () => {
+  const body: Record<string, unknown> = {}
+  body.self = body
+  const result = providerErrorSummary({ error: { statusCode: 400, requestBodyValues: body } })
+  expect(result.statusCode).toBe(400)
+  expect(result.requestBodyBytes).toBeUndefined()
+})
+
+test("request composition counts binary image data as base64 and ignores unknown image payloads", () => {
+  const result = providerRequestSummary([
+    {
+      role: "user",
+      content: [
+        { type: "image", image: new Uint8Array(6) },
+        { type: "image", image: 42 },
+      ],
+    },
+  ])
+  expect(result).toEqual({ messageCount: 1, imageCount: 2, imageBytes: 8, textBytes: 0 })
+})
+
 test("extracts allowlisted evidence from a bounded JSON response body without logging it", () => {
   const result = providerErrorSummary({
     error: {
