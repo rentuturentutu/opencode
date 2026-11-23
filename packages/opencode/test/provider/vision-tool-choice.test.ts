@@ -38,6 +38,17 @@ describe("Vision tool choice compatibility", () => {
     }
     expect(ProviderTransform.toolChoice(api(vision, "@ai-sdk/openai-compatible"), "required")).toBe("required")
   })
+
+  test("relaxes forced choice for direct DeepSeek thinking endpoints", () => {
+    for (const id of ["deepseek-flash", "deepseek-reasoner", "DeepSeek-V4.1-Flash"]) {
+      expect(ProviderTransform.toolChoice(api(id, "@ai-sdk/openai-compatible"), "required")).toBe("auto")
+    }
+    expect(ProviderTransform.toolChoice(api("deepseek-chat", "@ai-sdk/openai-compatible"), undefined)).toBeUndefined()
+    expect(ProviderTransform.toolChoice(api("deepseek-chat", "@ai-sdk/openai-compatible"), "none")).toBe("none")
+    expect(ProviderTransform.toolChoice(api("qwen3-coder-plus", "@ai-sdk/openai-compatible"), "required")).toBe(
+      "required",
+    )
+  })
 })
 
 afterEach(disposeAllInstances)
